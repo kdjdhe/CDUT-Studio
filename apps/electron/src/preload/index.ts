@@ -12,6 +12,7 @@ import type { CustomNotificationSound } from '../types'
 import type { PresetReference, PresetReferenceReport, PresetScopeRebindResult, LarkCliStatus, LarkCliOperationResult, LarkLoginStartResult, LarkLoginEvent, LarkMcpCredentialsInput, LarkMcpSetupResult, LarkMcpStatus } from '@profer/shared'
 import { CDUT_AI_CLASS_IPC_CHANNELS, CDUT_ZONE_IPC_CHANNELS, STUDY_IPC_CHANNELS, type AiClassSessionSummary, type CdutAccountProfile, type CdutGatekeeperDecision, type CdutGatekeeperNoticeEvent, type CdutLoginInput, type CdutLoginResult, type CdutSavedAccountSummary, type CdutMutationConfirmRequest, type CdutMutationConfirmResult, type KnowledgeGraphData, type StudyDocumentOutline, type StudyDocumentQueryInput, type StudyGraphCostEstimate, type StudyGraphGenerateInput, type StudyGraphProgressEvent, type StudyIngestDocumentsInput, type StudySearchKnowledgeInput, type StudySearchKnowledgeResult, type StudySetDocumentsActiveInput, type StudyToggleDocumentActiveInput } from '@profer/shared'
 import { YANHU_EXPRESS_IPC_CHANNELS, type YanhuCloseRightInput, type YanhuCreateTabInput, type YanhuLoadingChangedEvent, type YanhuNavigateInput, type YanhuReorderTabsInput, type YanhuSyncThemeInput, type YanhuTabRefInput, type YanhuTabsState, type YanhuUrlChangedEvent, type YanhuViewLayout, type YanhuPetBootstrap, type YanhuPetChatInput, type YanhuPetConfig, type YanhuPetMessage, type YanhuPetStateEvent, type YanhuPetStreamEvent, type YanhuPetViewport, type YanhuPetWindowGeometry } from '@profer/shared'
+import { CDU_ZONE_IPC_CHANNELS, type CduAccountProfile, type CduLoginInput, type CduLoginResult, type CduMfaQrPayload, type CduSavedAccountSummary, type CduOverviewData, type CduIspData } from '@profer/shared'
 import type {
   RuntimeStatus,
   GitRepoStatus,
@@ -1624,6 +1625,28 @@ export interface ElectronAPI {
     petShowContextMenu: () => Promise<{ success: boolean }>
     /** 特权指令：唤起「砚湖秒通 · 实时底层诊断控制台」 */
     openDiagnosticConsole: () => Promise<{ success: boolean }>
+  }
+
+  // ===== CDU 专区（成都大学）特区账户 =====
+  cduZone: {
+    getAccount: () => Promise<CduAccountProfile>
+    /** 查询本地已保存的特区账户元数据（供登录卡一键填充） */
+    getSavedAccount: () => Promise<CduSavedAccountSummary>
+    login: (input: CduLoginInput) => Promise<CduLoginResult>
+    logout: () => Promise<{ success: boolean }>
+    /** 拉取教务只读数据聚合（课表/成绩/考试/通知）；force=true 绕过本地缓存 */
+    fetchOverview: (force?: boolean) => Promise<CduOverviewData>
+    /** 未登录态读取本地离线快照（零网络请求；无快照返回 null） */
+    fetchOverviewOffline: () => Promise<CduOverviewData | null>
+    /** 拉取 ISP 学生综合服务平台数据聚合（通知/素质分/图书/困难认定）；force=true 绕过本地缓存 */
+    fetchIsp: (force?: boolean) => Promise<CduIspData>
+    /** MFA 二次验证：拉取当前二维码快照 */
+    getMfaQrSnapshot: () => Promise<CduMfaQrPayload>
+    /** MFA 二次验证：取消扫码登录 */
+    cancelMfa: () => Promise<void>
+    /** MFA 二次验证：订阅二维码阶段/图片更新推送 */
+    onMfaQrUpdated: (callback: (payload: CduMfaQrPayload) => void) => () => void
+    onStatusChanged: (callback: (profile: CduAccountProfile) => void) => () => void
   }
 
   // ===== AI 速课堂（学习资料） =====
@@ -3784,6 +3807,34 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke(YANHU_EXPRESS_IPC_CHANNELS.PET_SET_IGNORE_MOUSE, ignore),
     petShowContextMenu: () =>
       ipcRenderer.invoke(YANHU_EXPRESS_IPC_CHANNELS.PET_SHOW_CONTEXT_MENU),
+  },
+
+  // ===== CDU 专区（成都大学）特区账户 =====
+  cduZone: {
+    getAccount: () => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.GET_ACCOUNT),
+    getSavedAccount: () => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.GET_SAVED_ACCOUNT),
+    login: (input: CduLoginInput) => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.LOGIN, input),
+    logout: () => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.LOGOUT),
+    fetchOverview: (force?: boolean) => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.FETCH_OVERVIEW, force === true),
+    /** 未登录态读取本地离线快照（零网络请求；无快照返回 null） */
+    fetchOverviewOffline: () =>
+      ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.FETCH_OVERVIEW_OFFLINE) as Promise<CduOverviewData | null>,
+    fetchIsp: (force?: boolean) => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.FETCH_ISP, force === true),
+    /** MFA：拉取当前二维码快照（打开面板时） */
+    getMfaQrSnapshot: () => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.MFA_QR_SNAPSHOT) as Promise<CduMfaQrPayload>,
+    /** MFA：取消扫码登录 */
+    cancelMfa: () => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.MFA_CANCEL),
+    /** MFA：订阅二维码阶段/图片更新推送 */
+    onMfaQrUpdated: (callback: (payload: CduMfaQrPayload) => void) => {
+      const handler = (_: unknown, payload: CduMfaQrPayload) => callback(payload)
+      ipcRenderer.on(CDU_ZONE_IPC_CHANNELS.MFA_QR_UPDATED, handler)
+      return () => ipcRenderer.removeListener(CDU_ZONE_IPC_CHANNELS.MFA_QR_UPDATED, handler)
+    },
+    onStatusChanged: (callback: (profile: CduAccountProfile) => void) => {
+      const handler = (_: unknown, profile: CduAccountProfile) => callback(profile)
+      ipcRenderer.on(CDU_ZONE_IPC_CHANNELS.STATUS_CHANGED, handler)
+      return () => ipcRenderer.removeListener(CDU_ZONE_IPC_CHANNELS.STATUS_CHANGED, handler)
+    },
   },
 
   // ===== AI 速课堂（学习资料） =====

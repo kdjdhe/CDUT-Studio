@@ -1,11 +1,15 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const appRoot = path.resolve(scriptDir, '..')
-const sourceDir = path.join(appRoot, 'node_modules', '@silurus', 'ooxml', 'dist')
+// 通过 Node 标准解析定位包位置，兼容 bun hoisted 布局（包可能被提升到根 node_modules）
+const require = createRequire(import.meta.url)
+const ooxmlEntry = require.resolve('@silurus/ooxml') // → <pkg>/dist/index.mjs
+const sourceDir = path.join(path.dirname(path.dirname(ooxmlEntry)), 'dist')
 const publicDir = path.join(appRoot, 'src', 'renderer', 'public', 'vendor', 'ooxml')
 
 if (!fs.existsSync(sourceDir)) {

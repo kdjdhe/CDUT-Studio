@@ -24,6 +24,7 @@ import { AutomationFormView } from '@/components/automation/AutomationFormView'
 import { PlanningView } from '@/components/planning/PlanningView'
 import { AgentSkillsView } from '@/components/agent-skills/AgentSkillsView'
 import { CdutZoneView } from '@/components/cdut-zone/CdutZoneView'
+import { CduZoneView } from '@/components/cdu-zone/CduZoneView'
 import { automationFormAtom } from '@/atoms/automation-atoms'
 import { activeViewAtom } from '@/atoms/active-view'
 import { appModeAtom } from '@/atoms/app-mode'
@@ -324,6 +325,9 @@ export function MainArea(): React.ReactElement {
         ) : activeView === 'cdut-zone' ? (
           // CDUT 专区：全屏视图（特区账户登录 + 专区内容）
           <CdutZoneView />
+        ) : activeView === 'cdu-zone' ? (
+          // CDU 专区：全屏视图（成都大学统一身份认证 + 数智教务只读数据）
+          <CduZoneView />
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
             {/* 顶栏横跨整个主区：组合分屏时两侧顶栏共用同一条基线。 */}

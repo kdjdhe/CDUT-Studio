@@ -201,6 +201,12 @@ cmd.exe /c ".\apps\electron\out\win-unpacked\CDUT Studio.exe --enable-logging"
 - **凭据本地加密**：落盘 `~/.cdutai/cdut-account.json`（`safe-file` 原子写入），密码仅在勾选「记住密码」时经 `token-crypto`（优先 `safeStorage`，回退 AES-256-GCM `proferv1:` 格式）加密；登出三阶段清理凭据文件与分区存储。
 - **如实标注**：状态 `active` 仅表示最近一次认证成功且保活心跳正常，**不代表维持内网长连接**；不嗅探内网 Cookie，失败的持久化路径不得伪造成成功。
 
+### 3.5.1 CDU 专区（成都大学）课表展示
+
+CDU 专区与 CDUT 专区分开：`main/lib/cdu/cdu-jw-client.ts` 从数智教务 `queryKbForGrdb` 读取学生课表，并把每条记录的 `xjc` 映射为 `CduCourseItem.period`；共享类型位于 `packages/shared/src/types/cdu.ts`。`renderer/components/cdu-zone/CduZoneView.tsx` 将同一课程的连续节次合并为课程卡，按星期一至星期日与节次组成周课表。窄窗口允许横向滚动，缺少星期或节次的课程单独列出，不虚构排课位置。
+
+课表的周次选择由 `renderer/atoms/cdu-atoms.ts` 的 `cduTimetableWeekAtom` 保存；默认展示全部周次，用户可手动筛选。当前没有可靠的校历起始日，不自动推算或声称某周是当前教学周。成绩、考试和通知仍使用原有只读聚合查询。
+
 ---
 
 ### 3.6 CDUT 专属 Tools 与教务接口高可用调用规范（确保 HTTP 200）

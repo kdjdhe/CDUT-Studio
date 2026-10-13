@@ -6,11 +6,12 @@
  * - planning: 规划中心视图
  * - agent-skills: Agent 技能（Skills/MCP）全屏管理视图
  * - cdut-zone: CDUT 专区
+ * - cdu-zone: CDU 专区（成都大学）
  */
 
 import { atomWithStorage } from 'jotai/utils'
 
-export type ActiveView = 'conversations' | 'planning' | 'agent-skills' | 'cdut-zone'
+export type ActiveView = 'conversations' | 'planning' | 'agent-skills' | 'content-review' | 'cdut-zone' | 'cdu-zone'
 
 /** 当前活跃视图（持久化到 localStorage，刷新后保持当前页面） */
 export const activeViewAtom = atomWithStorage<ActiveView>('profer-active-view', 'conversations')

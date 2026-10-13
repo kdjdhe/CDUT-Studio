@@ -132,6 +132,7 @@ import type {
 } from '@profer/shared'
 import { KNOWLEDGE_IPC_CHANNELS } from '@profer/shared'
 import { CDUT_AI_CLASS_IPC_CHANNELS, CDUT_ZONE_IPC_CHANNELS, STUDY_IPC_CHANNELS, YANHU_EXPRESS_IPC_CHANNELS, type CdutGatekeeperDecision, type CdutLoginInput, type CdutMutationConfirmResult, type StudyDocumentQueryInput, type StudyGraphGenerateInput, type StudyIngestDocumentsInput, type StudySearchKnowledgeInput, type StudySetDocumentsActiveInput, type StudyToggleDocumentActiveInput, type YanhuCdpInput, type YanhuCdpResult, type YanhuCloseRightInput, type YanhuCreateTabInput, type YanhuNavigateInput, type YanhuReorderTabsInput, type YanhuSyncThemeInput, type YanhuTabRefInput, type YanhuViewLayout } from '@profer/shared'
+import { CDU_ZONE_IPC_CHANNELS, type CduLoginInput } from '@profer/shared'
 import type { UserProfile, AppSettings } from '../types'
 import { getRuntimeStatus, getGitRepoStatus, reinitializeRuntime } from './lib/runtime-init'
 import { browserController } from './lib/browser-controller'
@@ -155,6 +156,10 @@ import type {
   YanhuPetViewport,
   YanhuPetWindowGeometry,
 } from '@profer/shared'
+import { cduAuthManager } from './lib/cdu/cdu-auth-manager'
+import { cduJwClient } from './lib/cdu/cdu-jw-client'
+import { cduIspClient } from './lib/cdu/cdu-isp-client'
+import { getOfflineOverviewSnapshot } from './lib/cdu/cdu-cache'
 import { resolveCdutGatekeeper } from './lib/cdut/cdut-gatekeeper'
 import { resolveCdutMutationConfirm } from './lib/cdut/cdut-mutation-guard'
 import {
@@ -6321,6 +6326,54 @@ export function registerIpcHandlers(): void {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) {
         window.webContents.send(CDUT_ZONE_IPC_CHANNELS.STATUS_CHANGED, profile)
+      }
+    }
+  })
+
+  // ===== CDU 专区（成都大学）特区账户 =====
+  // 账户与 CDUT 特区物理隔离：独立分区 persist:cdu-zone、独立凭据文件 ~/.cdutai/cdu-account.json
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.GET_ACCOUNT, () => {
+    void cduAuthManager.ensureSessionRestored()
+    return cduAuthManager.getProfile()
+  })
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.GET_SAVED_ACCOUNT, () => cduAuthManager.getSavedAccount())
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.LOGIN, async (_event, input: CduLoginInput) => {
+    return await cduAuthManager.login(input)
+  })
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.LOGOUT, async () => {
+    await cduAuthManager.logout()
+  })
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.FETCH_OVERVIEW, async (_event, force?: boolean) => {
+    return await cduJwClient.fetchOverview(force === true)
+  })
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.FETCH_ISP, async (_event, force?: boolean) => {
+    return await cduIspClient.fetchOverview(force === true)
+  })
+  // 未登录态的离线快照（只读缓存文件，零网络请求；供未登录界面渲染课表）
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.FETCH_OVERVIEW_OFFLINE, () => {
+    return getOfflineOverviewSnapshot()
+  })
+  // MFA 二次验证（企业微信扫码）：二维码快照 / 用户取消
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.MFA_QR_SNAPSHOT, () => {
+    return cduAuthManager.getMfaQrSnapshot()
+  })
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.MFA_CANCEL, () => {
+    cduAuthManager.cancelMfa()
+  })
+
+  // CDU 特区账户状态变更时向所有存活窗口广播
+  cduAuthManager.setStatusCallback((profile) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(CDU_ZONE_IPC_CHANNELS.STATUS_CHANGED, profile)
+      }
+    }
+  })
+  // MFA 二维码阶段/图片更新广播（渲染进程据此刷新二维码面板）
+  cduAuthManager.setMfaQrCallback((payload) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(CDU_ZONE_IPC_CHANNELS.MFA_QR_UPDATED, payload)
       }
     }
   })

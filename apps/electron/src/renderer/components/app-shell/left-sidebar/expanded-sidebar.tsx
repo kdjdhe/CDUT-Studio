@@ -5,7 +5,7 @@
  */
 
 import * as React from 'react'
-import { PanelLeftClose, Plus, Search, FolderOpen, Archive, ArchiveRestore, ArrowLeft, Settings, Bot, GraduationCap } from 'lucide-react'
+import { PanelLeftClose, Plus, Search, FolderOpen, Archive, ArchiveRestore, ArrowLeft, Settings, Bot, GraduationCap, School } from 'lucide-react'
 import { useSetAtom } from 'jotai'
 import { cn } from '@/lib/utils'
 import { activeViewAtom } from '@/atoms/active-view'
@@ -178,6 +178,25 @@ export function ExpandedSidebar({ s }: { s: SidebarModel }): React.ReactElement 
         >
           <GraduationCap size={15} />
           <span className="text-[13px]">CDUT 专区</span>
+        </button>
+
+        <button
+          type="button"
+          data-profer-navigation-region="mode-switcher-cdu"
+          onClick={() => {
+            if (activeView !== 'cdu-zone') {
+              setActiveView('cdu-zone')
+            }
+          }}
+          className={cn(
+            'flex h-9 items-center justify-center gap-2 rounded-xl px-3 transition-colors duration-150 titlebar-no-drag',
+            activeView === 'cdu-zone'
+              ? 'bg-primary text-primary-foreground font-medium shadow-sm'
+              : 'bg-primary/5 hover:bg-primary/10 text-foreground/70 hover:text-foreground border border-border/60'
+          )}
+        >
+          <School size={15} />
+          <span className="text-[13px]">CDU 专区</span>
         </button>
       </div>
 

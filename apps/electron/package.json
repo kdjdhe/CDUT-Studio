@@ -71,6 +71,7 @@
     "@open-file-viewer/core": "^0.1.47",
     "@silurus/ooxml": "0.71.0",
     "cheerio": "1.2.0",
+    "jsqr": "^1.4.0",
     "pdfjs-dist": "^4.10.38",
     "pptxgenjs": "4.0.1"
   },

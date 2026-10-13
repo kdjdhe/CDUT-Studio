@@ -89,6 +89,9 @@ export * from './review-v2-contracts'
 // CDUT 专区特区账户相关类型
 export * from './cdut'
 
+// CDU 专区（成都大学）特区账户相关类型
+export * from './cdu'
+
 // AI 速课堂（学习资料大纲与学生认知档案）相关类型
 export * from './study'
 

@@ -110,6 +110,26 @@ export function getCdutAccountPath(): string {
 }
 
 /**
+ * 获取 CDU 专区（成都大学）特区账户安全存储路径
+ *
+ * 与 CDUT 特区账户同样物理隔离于全局配置目录，严防写入项目工作区导致 Git 泄露。
+ *
+ * @returns ~/.cdutai/cdu-account.json
+ */
+export function getCduAccountPath(): string {
+  return join(getConfigDir(), 'cdu-account.json')
+}
+
+/**
+ * 获取 CDU 专区数据缓存路径（教务聚合 + ISP 聚合，带 fetchedAt 时间戳）
+ *
+ * @returns ~/.cdutai/cdu-cache.json
+ */
+export function getCduCachePath(): string {
+  return join(getConfigDir(), 'cdu-cache.json')
+}
+
+/**
  * 获取对话索引文件路径
  *
  * @returns ~/.cdutai/conversations.json
