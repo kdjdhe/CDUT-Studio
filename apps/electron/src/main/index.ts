@@ -78,7 +78,7 @@ function registerProtocolsAndHandlers(): void {
     { scheme: 'cdut-resource', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
   ])
 
-  // 砚湖秒通多层框架白屏根除（引擎级隐身，须在 app ready 前注入）：
+  // 智联万站多层框架白屏根除（引擎级隐身，须在 app ready 前注入）：
   // C++ Blink 引擎原生将 navigator.webdriver 置为 false，其访问器为原生 native code，
   // 通过瑞数所有 Function.prototype.toString / Realm 对比检测（取代脆弱的 JS 原型链劫持）。
   app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
@@ -125,7 +125,7 @@ function registerProtocolsAndHandlers(): void {
     }
   })
 
-  // 砚湖秒通内网白屏根除：校内站点普遍使用内网中间证书/自签名证书，
+  // 智联万站内网白屏根除：校内站点普遍使用内网中间证书/自签名证书，
   // 一律信任 *.cdut.edu.cn，避免证书校验失败把整页拦成白屏；站外域名保持默认拒绝策略。
   app.on('certificate-error', (event, _webContents, url, _error, _certificate, callback) => {
     if (isCdutDomain(url)) {
@@ -186,6 +186,15 @@ import { yanhuExpressManager } from './lib/cdut/yanhu/yanhu-express-manager'
 import { yanhuPetWindowManager } from './lib/cdut/yanhu/yanhu-pet-window-manager'
 import { startStudyBenchmarkServer, stopStudyBenchmarkServer } from './lib/study/study-benchmark-server'
 import { startWorkspaceWatcher, stopWorkspaceWatcher } from './lib/workspace-watcher'
+import { closeAllLabToolWatchers } from './lib/cslab/cslab-tool-registry'
+import { closeAllVaultWatchers } from './lib/cslab/cslab-canvas-sync'
+import { closeAllCsLabVaultCaches } from './lib/cslab/cslab-vault-cache'
+import { stopAllShareWatchers } from './lib/cslab/cslab-share-watcher'
+import { closeAllShareDatabases } from './lib/cslab/cslab-share-db'
+import { stopAllHpcBridges } from './lib/cslab/cslab-hpc'
+import { closeAllHpcDatabases } from './lib/cslab/cslab-hpc-db'
+import { closeAllCsLabDatabases } from './lib/cslab/cslab-db'
+import { stopAllZoteroWatchers } from './lib/cslab/cslab-zotero'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import {
   registerBridge,
@@ -1180,6 +1189,17 @@ app.on('before-quit', () => {
   killOrphanedClaudeSubprocesses()
   // 停止工作区文件监听
   stopWorkspaceWatcher()
+  // 显式释放 CSLab 目录监听句柄（Windows 下不释放会阻止重命名/删除实验室目录）
+  void closeAllVaultWatchers()
+  void closeAllLabToolWatchers()
+  void stopAllShareWatchers()
+  void stopAllHpcBridges()
+  closeAllCsLabVaultCaches()
+  closeAllShareDatabases()
+  closeAllHpcDatabases()
+  // 关闭 CSLab 中央库并停止 Zotero WAL 监听，避免退出时残留 SQLite 句柄
+  void stopAllZoteroWatchers()
+  closeAllCsLabDatabases()
   // 停止所有 Bridge
   stopBridgeSelfHealing()
   stopAllBridges()

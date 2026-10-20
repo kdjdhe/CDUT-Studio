@@ -77,6 +77,7 @@ import { CdutAiClassAccessDialog } from './components/cdut-zone/CdutAiClassAcces
 import { useCdutAccountHydration } from './hooks/useCdutAccountHydration'
 import { useBrowserLocalFileSelectionQuote } from './hooks/useBrowserLocalFileSelectionQuote'
 import { useBrowserPreviewThemeSync } from './hooks/useBrowserPreviewThemeSync'
+import { useArchivedUnreadSync } from './atoms/sidebar-atoms'
 import {
   todosAtom,
   calendarEventsAtom,
@@ -136,7 +137,7 @@ function hasEnabledModel(
 const isDetachedPreviewWindow = new URLSearchParams(window.location.search).get('window') === 'detached-preview'
 const isAgentPreviewWindow = new URLSearchParams(window.location.search).get('window') === 'agent-preview'
 const isPlanningWindow = new URLSearchParams(window.location.search).get('window') === 'planning'
-// 砚湖秒通 · 桌宠「砚小龙」独立透明子窗口
+// 智联万站 · 桌宠「砚小龙」独立透明子窗口
 const isYanhuPetWindow = new URLSearchParams(window.location.search).get('window') === 'yanhu-pet'
 
 /**
@@ -630,6 +631,8 @@ function AgentListenersInitializer(): null {
   useBrowserLocalFileSelectionQuote()
   // 换皮肤时让已打开的文件预览跟上（受管浏览器里的普通网页不跟）
   useBrowserPreviewThemeSync()
+  // 后台静默自动归档未读红点：根部常驻订阅，侧栏收起时事件也不丢
+  useArchivedUnreadSync()
   return null
 }
 
@@ -818,9 +821,15 @@ function TabStatePersistenceInitializer(): null {
       const visibleWorkspaceIds = new Set(
         getVisibleAgentWorkspaces(agentWorkspaces).map((workspace) => workspace.id),
       )
+      const defaultWorkspaceId = agentWorkspaces.find((workspace) => workspace.slug === 'default')?.id
       const visibleAgentSessionIds = new Set(
         agentSessions
-          .filter((session) => !session.workspaceId || visibleWorkspaceIds.has(session.workspaceId))
+          .filter(
+            (session) =>
+              !session.workspaceId ||
+              session.workspaceId === defaultWorkspaceId ||
+              visibleWorkspaceIds.has(session.workspaceId),
+          )
           .map((session) => session.id),
       )
       const validSessionIds = new Set(
@@ -1109,7 +1118,7 @@ if (isDetachedPreviewWindow) {
     )
   })
 } else if (isYanhuPetWindow) {
-  // ===== 砚湖秒通 · 桌宠「砚小龙」透明子窗口 =====
+  // ===== 智联万站 · 桌宠「砚小龙」透明子窗口 =====
   import('./components/cdut-zone/yanhu/pet/YanhuPetFloatingHost').then(({ YanhuPetFloatingHost }) => {
     ReactDOM.createRoot(document.getElementById('root')!).render(
       <React.StrictMode>

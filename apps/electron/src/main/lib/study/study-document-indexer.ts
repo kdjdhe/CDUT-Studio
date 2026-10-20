@@ -41,6 +41,7 @@ import {
 } from '../document-parse-tools'
 import { normalizeToMarkdown } from './markdown-normalizer'
 import { chunkMarkdownSemantically } from './statistical-semantic-chunker'
+import { chunkByPropositions } from './propositional-chunker'
 import { ocrImageToMarkdown } from './ocr-engine'
 
 // ===== 类型分类 =====
@@ -73,8 +74,48 @@ function stripAnchorMarkupForSummary(content: string): string {
     .trim()
 }
 
-/** 把已纯化的 Markdown 经统计语义切块，转为可落盘的结构化分块 */
+/** 行内数学（$...$）匹配；命中后再由 hasLatexMath 校验是否真的具备 LaTeX 特征 */
+const INLINE_MATH_PATTERN = /\$([^\$\n]{1,200}?)\$/
+
+/**
+ * 判断正文是否确实包含 LaTeX 数学环境。
+ *
+ * 红线：不得仅凭 `$` 判定——价格写法（如 `$100 ... $20`）会被误判为行内公式并整篇切换切块策略。
+ * 行内公式还必须带 LaTeX 特征（命令 / 上下标 / 花括号 / 希腊字母）或为单个变量字母。
+ */
+function hasLatexMath(markdown: string): boolean {
+  if (/\$\$[\s\S]+?\$\$/.test(markdown)) return true
+  const inline = new RegExp(INLINE_MATH_PATTERN.source, 'g')
+  let match: RegExpExecArray | null
+  while ((match = inline.exec(markdown)) !== null) {
+    const inner = match[1] ?? ''
+    if (/[\\^_{}]/.test(inner) || /[\u0370-\u03ff]/.test(inner) || /^[a-zA-Z]$/.test(inner)) return true
+  }
+  return false
+}
+
+/** 把已纯化的 Markdown 转为可落盘的结构化分块（确含 LaTeX 公式时优先走原子命题化切块，保留完整定理公式与层级面包屑） */
 function rawSectionsFromMarkdown(markdown: string): RawSection[] {
+  // 仅在正文确实包含 LaTeX 数学环境时切换命题化切块（保留完整公式与章节面包屑绑定）
+  if (hasLatexMath(markdown)) {
+    const propChunks = chunkByPropositions(markdown)
+    if (propChunks.length > 0) {
+      return propChunks.map((chunk) => {
+        // 面包屑形如 `[高等数学 > 第三章 > 柯西中值定理]`：先剥离方括号，再按层级回填 title/level
+        const parts = chunk.breadcrumb
+          .replace(/^\[|\]$/g, '')
+          .split('>')
+          .map((segment) => segment.trim())
+          .filter(Boolean)
+        const rawTitle = parts.length > 0 ? parts[parts.length - 1]! : '定理命题'
+        return {
+          title: rawTitle.length > 40 ? `${rawTitle.slice(0, 40)}…` : rawTitle,
+          level: Math.min(6, Math.max(1, parts.length)),
+          content: chunk.content,
+        }
+      })
+    }
+  }
   return chunkMarkdownSemantically(markdown).map((chunk) => ({
     title: chunk.title.length > 40 ? `${chunk.title.slice(0, 40)}…` : chunk.title,
     level: chunk.level,
@@ -90,6 +131,52 @@ const MIN_CHUNK_CHARS = 1200
 const MAX_CHUNK_CHARS = 2600
 /** PDF 每多少个物理页聚合为一个章节块 */
 const PDF_PAGES_PER_SECTION = 3
+/** 病态超长单句的兜底切分上限（正常内容不会触及；定长切分不丢字符） */
+const EMERGENCY_MAX_CHUNK_CHARS = MAX_CHUNK_CHARS * 4
+
+/**
+ * 把一段可能超长的正文按「段落 → 句子」两级语义边界切分为若干片段，并贪心聚合到 MIN~MAX 区间。
+ *
+ * 红线：优先不截断句子；仅当出现病态超长单句（> EMERGENCY_MAX_CHUNK_CHARS）时才退化为定长切分，
+ * 以免单块撑爆检索与提示词预算（定长切分不丢字符，仅切分点不是语义边界）。
+ */
+function splitContentIntoChunks(content: string): string[] {
+  if (content.length <= MAX_CHUNK_CHARS) return [content]
+
+  const blocks: string[] = []
+  for (const paragraph of content.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)) {
+    if (paragraph.length <= MAX_CHUNK_CHARS) {
+      blocks.push(paragraph)
+      continue
+    }
+    for (const sentence of paragraph.split(/(?<=[。！？；!?…])/).map((s) => s.trim()).filter(Boolean)) {
+      if (sentence.length <= EMERGENCY_MAX_CHUNK_CHARS) {
+        blocks.push(sentence)
+        continue
+      }
+      for (let offset = 0; offset < sentence.length; offset += EMERGENCY_MAX_CHUNK_CHARS) {
+        blocks.push(sentence.slice(offset, offset + EMERGENCY_MAX_CHUNK_CHARS))
+      }
+    }
+  }
+
+  const chunks: string[] = []
+  let buffer: string[] = []
+  let bufferChars = 0
+  const flush = (): void => {
+    const piece = buffer.join('\n\n').trim()
+    if (piece) chunks.push(piece)
+    buffer = []
+    bufferChars = 0
+  }
+  for (const block of blocks) {
+    if (bufferChars >= MIN_CHUNK_CHARS && bufferChars + block.length > MAX_CHUNK_CHARS) flush()
+    buffer.push(block)
+    bufferChars += block.length
+  }
+  flush()
+  return chunks.length > 0 ? chunks : [content]
+}
 
 /** 原始分块（尚未分配 sectionId） */
 interface RawSection {
@@ -264,7 +351,7 @@ async function extractPdfPagesWithAnchors(
   return { pages, cleanFullMarkdown, fileId }
 }
 
-/** 把分页文本每 N 页聚合为一个章节块 */
+/** 把分页文本每 N 页聚合为一个章节块（带 MAX_CHUNK_CHARS 硬上限防护） */
 function splitPdfPages(pages: PdfPage[]): RawSection[] {
   const sections: RawSection[] = []
   for (let index = 0; index < pages.length; index += PDF_PAGES_PER_SECTION) {
@@ -285,11 +372,16 @@ function splitPdfPages(pages: PdfPage[]): RawSection[] {
         .map((line) => line.replace(/^#{1,6}\s+/, '').trim())
         .find(Boolean) ||
       `第 ${startPage} 页`
-    sections.push({
-      title: firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine,
-      level: 1,
-      content,
-      pageRange: [startPage, endPage],
+    const baseTitle = firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine
+
+    // 超长内容按「段落 → 句子」语义边界二次分块，避免单块过大
+    splitContentIntoChunks(content).forEach((partContent, partIndex) => {
+      sections.push({
+        title: partIndex === 0 ? baseTitle : `${baseTitle} (${partIndex + 1})`,
+        level: 1,
+        content: partContent,
+        pageRange: [startPage, endPage],
+      })
     })
   }
   return sections
@@ -301,7 +393,7 @@ function buildImageSection(filePath: string): RawSection[] {
     {
       title: basename(filePath),
       level: 1,
-      content: `本地图片资料：${filePath}\n（图片无文本层，请由多模态模型直接查看该图片内容。）`,
+      content: `Local image material: ${filePath}\n(The image has no text layer; inspect the image content directly with multimodal vision.)`,
     },
   ]
 }
@@ -321,6 +413,17 @@ interface PersistedStudyDocument {
   sections: Array<StudyDocumentSection & { content: string }>
 }
 
+/** 确保所有分块（含 PPT、Docx 等各路径）均受 MAX_CHUNK_CHARS 硬上限约束 */
+function enforceMaxChunkSize(sections: RawSection[]): RawSection[] {
+  const result: RawSection[] = []
+  for (const section of sections) {
+    splitContentIntoChunks(section.content).forEach((content, index) => {
+      result.push(index === 0 ? { ...section, content } : { ...section, title: `${section.title} (${index + 1})`, content })
+    })
+  }
+  return result
+}
+
 /** 把原始分块赋 sectionId 并落盘 */
 function persistDocument(
   sessionId: string,
@@ -330,7 +433,8 @@ function persistDocument(
   rawSections: RawSection[],
   fileId?: string,
 ): PersistedStudyDocument {
-  const sections: Array<StudyDocumentSection & { content: string }> = rawSections.map((raw, index) => {
+  const normalizedSections = enforceMaxChunkSize(rawSections)
+  const sections: Array<StudyDocumentSection & { content: string }> = normalizedSections.map((raw, index) => {
     const cleanText = stripAnchorMarkupForSummary(raw.content)
     return {
       sectionId: `${documentId}-s${index + 1}`,
@@ -359,17 +463,18 @@ function persistDocument(
     sections,
   }
 
+  getStudyDocumentDir(sessionId, documentId, { create: true })
   writeJsonFileAtomic(getStudyDocumentIndexPath(sessionId, documentId), document as unknown as object)
   return document
 }
 
 /** 生成轻量级大纲导航 Markdown（控制在约 800 字以内，供模型直接消费） */
 function buildNavigationMarkdown(document: PersistedStudyDocument): string {
-  const fileIdTag = document.fileId ? `｜锚点前缀：\`${document.fileId}\`` : ''
+  const fileIdTag = document.fileId ? ` | anchor prefix (锚点前缀): \`${document.fileId}\`` : ''
   const header =
-    `## 学习资料大纲：${document.fileName}\n` +
-    `文档标识：\`${document.documentId}\`${fileIdTag}｜共 ${document.sections.length} 个章节块、${document.totalChars} 字。\n` +
-    '（原文未全部注入上下文，讲解具体知识点时请调用 `study_inspect_section` 按 sectionId 查阅原文，并用 `[第X页·小节](#f1:pX-bY)` 格式标注溯源锚点。）\n'
+    `## Study Material Outline (学习资料大纲): ${document.fileName}\n` +
+    `Document ID: \`${document.documentId}\`${fileIdTag} | ${document.sections.length} section block(s), ${document.totalChars} characters in total.\n` +
+    '(The full source text is NOT fully injected into the context. When explaining a specific knowledge point, call `study_inspect_section` with its sectionId to read the original text, and mark source anchors using the `[第X页·小节](#f1:pX-bY)` format (「第X页·小节」 means "Page X · Section name").)\n'
   const lines: string[] = []
   for (const section of document.sections) {
     const locator = section.pageRange
@@ -435,6 +540,7 @@ export function isStudyDocumentEnabled(sessionId: string, documentId: string): b
 
 /** 落盘激活状态（原子写入） */
 function writeDisabledDocumentIds(sessionId: string, disabled: Set<string>): void {
+  getStudySessionDir(sessionId, { create: true })
   const state: ActiveDocumentsState = { disabledDocumentIds: [...disabled] }
   writeJsonFileAtomic(getStudyActiveDocumentsPath(sessionId), state as unknown as object)
 }
@@ -651,7 +757,7 @@ export async function ingestStudyDocuments(
       // 落盘纯净全文 Markdown（目录创建与索引写入同源）
       if (fullMarkdown.trim()) {
         try {
-          const dir = getStudyDocumentDir(sessionId, documentId)
+          const dir = getStudyDocumentDir(sessionId, documentId, { create: true })
           writeFileSync(join(dir, 'document.md'), fullMarkdown, 'utf-8')
         } catch (error) {
           console.warn(`[速课堂索引] 落盘纯文本 Markdown 失败: ${filePath}`, error)
@@ -959,6 +1065,7 @@ export function serializeCognitionMarkdown(profile: StudentCognitionProfile): st
 
 /** 写入学生认知档案（Markdown 落盘） */
 export function writeStudentCognition(sessionId: string, profile: StudentCognitionProfile): void {
+  getStudySessionDir(sessionId, { create: true })
   const snapshot: StudentCognitionProfile = { ...profile, lastUpdated: Date.now() }
   writeFileSync(getStudentCognitionPath(sessionId), serializeCognitionMarkdown(snapshot), 'utf-8')
 }
@@ -980,11 +1087,10 @@ export function buildStudyOutlineForPrompt(sessionId: string): string {
   const lines: string[] = []
   let used = 0
   for (const doc of outlines) {
-    const header = `### 资料：${doc.fileName}（documentId=${doc.documentId}，共 ${doc.totalSections} 个章节）`
+    const header = `### Material: ${doc.fileName} (documentId=${doc.documentId}, ${doc.totalSections} section(s) in total)`
     if (used + header.length > MAX_OUTLINE_PROMPT_CHARS) {
       lines.push(
-        '…（资料大纲篇幅较长，部分内容已折叠。如需检索未在大纲列出的细节、考点或跨文件关联，' +
-          '请直接调用 study_search_knowledge 工具发起全域混合检索；如需查阅具体已知章节，请使用 study_inspect_section 按 sectionId 查阅原文。）',
+        '…(The study material outline (学习资料大纲) is long and part of it has been folded. To retrieve details, exam points, or cross-file connections not listed in the outline, call the study_search_knowledge tool for full-domain hybrid retrieval; to read a specific known section, use study_inspect_section with its sectionId.)',
       )
       break
     }
@@ -992,15 +1098,15 @@ export function buildStudyOutlineForPrompt(sessionId: string): string {
     used += header.length
     for (const section of doc.sections) {
       const locator = section.pageRange
-        ? `（P${section.pageRange[0]}-${section.pageRange[1]}）`
+        ? `(P${section.pageRange[0]}-${section.pageRange[1]})`
         : section.slideIndex
-          ? `（第 ${section.slideIndex} 页）`
+          ? `(slide ${section.slideIndex})`
           : ''
       const line = `- [${section.sectionId}] ${section.title}${locator} — ${section.summary}`
       if (used + line.length > MAX_OUTLINE_PROMPT_CHARS) {
         lines.push(
-          '…（资料大纲过长，已截断。如需检索未在大纲列出的细节、考点或跨文件关联，请直接调用 study_search_knowledge ' +
-            '工具发起全域混合检索；如需查阅具体已知章节，请使用 study_inspect_section 按 sectionId 查阅原文。）',
+          '…(The study material outline (学习资料大纲) is too long and has been truncated. To retrieve details, exam points, or cross-file connections not listed in the outline, call the study_search_knowledge ' +
+            'tool for full-domain hybrid retrieval; to read a specific known section, use study_inspect_section with its sectionId.)',
         )
         return lines.join('\n')
       }
@@ -1013,13 +1119,13 @@ export function buildStudyOutlineForPrompt(sessionId: string): string {
 
 /** 供提示词注入：把认知档案压缩为简短文本 */
 export function describeCognitionForPrompt(profile: StudentCognitionProfile | null): string {
-  if (!profile) return '（尚无学生认知档案，遇到新学科/新教材时请主动发起 /grill-me 摸底诊断）'
-  const join = (items: string[]): string => (items.length > 0 ? items.join('、') : '（无）')
+  if (!profile) return '(No student cognition profile (学生认知档案) yet; when encountering a new subject or new textbook, proactively start a /grill-me baseline diagnostic (摸底诊断).)'
+  const join = (items: string[]): string => (items.length > 0 ? items.join('、') : '(none)')
   return [
-    `学科：${profile.subject || '未指定'}`,
-    `目标：${profile.targetGoal || '未指定'}`,
-    `已掌握：${join(profile.masteredConcepts)}`,
-    `待学未知：${join(profile.unlearnedConcepts)}`,
-    `薄弱混淆：${join(profile.fragileConcepts)}`,
-  ].join('；')
+    `Subject (学科): ${profile.subject || 'unspecified'}`,
+    `Goal (目标): ${profile.targetGoal || 'unspecified'}`,
+    `Mastered (已掌握): ${join(profile.masteredConcepts)}`,
+    `Unlearned (待学未知): ${join(profile.unlearnedConcepts)}`,
+    `Fragile/confused (薄弱混淆): ${join(profile.fragileConcepts)}`,
+  ].join('; ')
 }

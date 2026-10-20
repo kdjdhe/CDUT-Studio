@@ -19,10 +19,12 @@ interface CdutSubViewContainerProps {
   onClose: () => void
   /** 顶栏右侧操作区（位于关闭按钮左侧，如速课堂【切换课堂】入口） */
   actions?: React.ReactNode
+  /** 顶栏左侧操作区（紧贴校徽右侧，如速课堂左栏收起/展开开关） */
+  leftAction?: React.ReactNode
   children: React.ReactNode
 }
 
-export function CdutSubViewContainer({ title, onClose, actions, children }: CdutSubViewContainerProps): React.ReactElement {
+export function CdutSubViewContainer({ title, onClose, actions, leftAction, children }: CdutSubViewContainerProps): React.ReactElement {
   // Windows 窗口按钮位于右上角，顶栏右端按钮簇（切换课堂 / 关闭）必须避免伸入其安全区
   const isWindows = React.useMemo(() => detectIsWindows(), [])
   return (
@@ -32,12 +34,14 @@ export function CdutSubViewContainer({ title, onClose, actions, children }: Cdut
         className="flex shrink-0 items-center gap-3 border-b border-border/60 bg-card/80 px-5 py-3 titlebar-no-drag backdrop-blur-sm"
         style={isWindows ? { paddingRight: resolveWindowControlsRightInset(isWindows) + 12 } : undefined}
       >
-        {/* 最左侧：微缩版成都理工大学 Logo */}
+        {/* 最左侧：成都理工大学 Logo（保持清晰可辨的尺寸） */}
         <img
           src={cdutCeLogo}
           alt="成都理工大学"
-          className="h-6 w-auto shrink-0 object-contain dark:brightness-125"
+          className="h-10 w-auto shrink-0 object-contain dark:brightness-125"
         />
+        {/* 校徽右侧操作插槽（保持 titlebar-no-drag 安全） */}
+        {leftAction ? <div className="flex shrink-0 items-center">{leftAction}</div> : null}
         {/* 中间：板块名称，加粗居中 */}
         <div className="min-w-0 flex-1 text-center">
           <h2 className="truncate text-sm font-semibold tracking-tight text-foreground">{title}</h2>

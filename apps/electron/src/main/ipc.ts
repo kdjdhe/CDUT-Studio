@@ -4,7 +4,7 @@
  * 负责注册主进程和渲染进程之间的通信处理器
  */
 
-import { ipcMain, nativeTheme, shell, dialog, BrowserWindow, app, Notification } from 'electron'
+import { ipcMain, nativeTheme, shell, dialog, BrowserWindow, app, Notification, session } from 'electron'
 import { isAbsolute, join, relative, resolve, sep, dirname, basename, extname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync } from 'node:fs'
@@ -131,7 +131,7 @@ import type {
   BrowserAddBookmarkInput,
 } from '@profer/shared'
 import { KNOWLEDGE_IPC_CHANNELS } from '@profer/shared'
-import { CDUT_AI_CLASS_IPC_CHANNELS, CDUT_ZONE_IPC_CHANNELS, STUDY_IPC_CHANNELS, YANHU_EXPRESS_IPC_CHANNELS, type CdutGatekeeperDecision, type CdutLoginInput, type CdutMutationConfirmResult, type StudyDocumentQueryInput, type StudyGraphGenerateInput, type StudyIngestDocumentsInput, type StudySearchKnowledgeInput, type StudySetDocumentsActiveInput, type StudyToggleDocumentActiveInput, type YanhuCdpInput, type YanhuCdpResult, type YanhuCloseRightInput, type YanhuCreateTabInput, type YanhuNavigateInput, type YanhuReorderTabsInput, type YanhuSyncThemeInput, type YanhuTabRefInput, type YanhuViewLayout } from '@profer/shared'
+import { CDUT_AI_CLASS_IPC_CHANNELS, CDUT_ZONE_IPC_CHANNELS, STUDY_IPC_CHANNELS, YANHU_EXPRESS_IPC_CHANNELS, type CdutDomainCacheName, type CdutDomainToolResult, type CdutGatekeeperDecision, type CdutLoginInput, type CdutMutationConfirmResult, type CdutToolInvokeParams, type StudyDocumentQueryInput, type StudyGraphGenerateInput, type StudyIngestDocumentsInput, type StudySearchKnowledgeInput, type StudySetDocumentsActiveInput, type StudyToggleDocumentActiveInput, type YanhuCdpInput, type YanhuCdpResult, type YanhuCloseRightInput, type YanhuCreateTabInput, type YanhuNavigateInput, type YanhuReorderTabsInput, type YanhuSyncThemeInput, type YanhuTabRefInput, type YanhuViewLayout } from '@profer/shared'
 import { CDU_ZONE_IPC_CHANNELS, type CduLoginInput } from '@profer/shared'
 import type { UserProfile, AppSettings } from '../types'
 import { getRuntimeStatus, getGitRepoStatus, reinitializeRuntime } from './lib/runtime-init'
@@ -146,7 +146,11 @@ import { isReadOnlyPreviewPathAllowed } from './lib/preview-path-policy'
 import { CHANGELOG_IPC_CHANNELS, type ChangelogEntry } from '@profer/shared'
 import { getChangelog } from './lib/changelog-service'
 import { registerReviewIpc } from './lib/review/review-ipc'
-import { cdutAuthManager } from './lib/cdut/cdut-auth-manager'
+import { registerCsLabIpc } from './lib/cslab'
+import { grantCsLabToolTrust, revokeCsLabToolTrust } from './lib/cslab/cslab-tool-trust'
+import { cdutAuthManager, CDUT_AUTH_PARTITION } from './lib/cdut/cdut-auth-manager'
+import { executeDomainTool } from './lib/cdut/cdut-jw-client'
+import { cdutDemoService } from './lib/cdut/cdut-demo/demo-service'
 import { yanhuExpressManager } from './lib/cdut/yanhu/yanhu-express-manager'
 import { yanhuPetWindowManager } from './lib/cdut/yanhu/yanhu-pet-window-manager'
 import { yanhuPiRuntime } from './lib/cdut/yanhu/yanhu-pi-runtime'
@@ -179,6 +183,26 @@ import {
   setStudyDocumentActive,
   setStudyDocumentsActive,
 } from './lib/study/study-document-indexer'
+import {
+  getTabs as getStudyTabs,
+  saveTabs as saveStudyTabs,
+  getMindmap as getStudyMindmap,
+  saveMindmapCoords as saveStudyMindmapCoords,
+  getFlashcards as getStudyFlashcards,
+  updateCardRating as updateStudyCardRating,
+  getQuiz as getStudyQuiz,
+  submitQuizAnswer as submitStudyQuizAnswer,
+  resetQuiz as resetStudyQuiz,
+  listStudyArtifacts,
+} from './lib/study/study-session-store'
+import { generateStudyArtifact } from './lib/study/study-artifact-service'
+import { mindMapToOpml } from '@profer/shared'
+import type {
+  AiClassRightTabItem,
+  StudyCardRatingInput,
+  StudyGenerateArtifactInput,
+  StudyQuizAnswerInput,
+} from '@profer/shared'
 import {
   listChannels,
   createChannel,
@@ -316,7 +340,8 @@ import { exitPlanService } from './lib/agent-exit-plan-service'
 import { assertMainWindowSender } from './lib/ipc-sender-guard'
 import type { MainWindowGetter } from './lib/ipc-sender-guard'
 import { getMainWindow } from './lib/main-window-state'
-import { getAgentSessionWorkspacePath, getAgentWorkspacesDir, getWorkspaceSkillsDir, getWorkspaceFilesDir, getScratchPadPath, getCustomSoundsDir, getAgentWorkspacePath, getStudySessionDir } from './lib/config-paths'
+import { getAgentSessionWorkspacePath, getAgentWorkspacesDir, getWorkspaceSkillsDir, getWorkspaceFilesDir, getScratchPadPath, getCustomSoundsDir, getAgentWorkspacePath, getStudySessionDir, getCdutScheduleCachePath, getCdutGradesCachePath } from './lib/config-paths'
+import { writeJsonFileAtomic, readJsonFileSafe } from './lib/safe-file'
 import { calculateStorageStats, cleanupStorage, cleanupTempFiles } from './lib/storage-service'
 import { compactAgentSessionStorage, previewAgentSessionCompaction } from './lib/agent-session-compaction'
 import { resolveMessageBlobs } from './lib/agent-session-manager'
@@ -769,7 +794,8 @@ function isPathAllowed(filePath: string, options?: FileAccessOptions): boolean {
  * 会话里的文件链接来自 Agent 输出，路径常落在工作区之外（皮肤目录、/tmp 日志、~/Library 等），
  * 这些路径用户已在对话里看见，点开预览不应再被授权根拦住。边界说明见 preview-path-policy.ts。
  *
- * 只用于只读预览类 handler；写操作与「用默认应用打开文件」必须继续使用 isPathAllowed。
+ * 只用于只读预览类 handler 与「用默认应用打开文件」（SYSTEM_OPEN_FILE）；
+ * 该动作对文件本身只读，与预览共享同一授权边界。写操作必须继续使用 isPathAllowed。
  */
 function isPreviewPathAllowed(filePath: string, options?: FileAccessOptions): boolean {
   if (options && isPathAllowed(filePath, options)) return true
@@ -1523,11 +1549,14 @@ export function registerIpcHandlers(): void {
     async (_, filePath: string, appName?: string, access?: FileAccessOptions | string[]): Promise<void> => {
       const options = normalizeFileAccessOptions(access)
       const candidateBasePaths = options?.candidateBasePaths
-      // 相对路径从候选基础目录解析（匹配工作区路径），而非 process.cwd()
+      // 相对路径从候选基础目录解析（匹配工作区路径），而非 process.cwd()；`~/...` 一并展开
       const { resolveTargetPath } = await import('./lib/file-preview-service')
       const absPath = resolveTargetPath(filePath, candidateBasePaths?.length ? candidateBasePaths : undefined)
-      if (!isPathAllowed(absPath, options)) {
-        console.warn('[IPC] shell:system-open-file 拒绝越界路径:', absPath)
+      // 授权边界与 GET_DEFAULT_APP_FOR_FILE 同构：预览可见的目标文件
+      // （上传课件 / candidateBasePaths / 只读预览白名单内的本地磁盘路径）一律放行，
+      // 杜绝「应用内可预览、系统默认应用却静默拒绝」的体验断层；系统/凭据敏感路径依旧拦截。
+      if (!isPreviewPathAllowed(absPath, options)) {
+        console.warn('[IPC] shell:system-open-file 拒绝越界/系统敏感路径:', absPath)
         return
       }
       if (process.platform === 'darwin') {
@@ -3379,13 +3408,17 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  // 快照回退（同一会话内回退到指定点）
+  // 快照回退（同一会话内撤销本轮及之后所有对话与文件更改）
   ipcMain.handle(
     AGENT_IPC_CHANNELS.REWIND_SESSION,
     async (_, input: RewindSessionInput): Promise<RewindSessionResult> => {
+      const targetUuid = input.targetMessageUuid || input.assistantMessageUuid
+      if (!targetUuid) {
+        throw new Error('撤销失败：未指定目标消息 UUID')
+      }
       return rewindAgentSession(
         input.sessionId,
-        input.assistantMessageUuid,
+        targetUuid,
       )
     }
   )
@@ -3958,10 +3991,23 @@ export function registerIpcHandlers(): void {
         throw new Error('REVISION_CONFLICT: 会话状态已更新，请刷新后重试')
       }
       const updated = updateAgentSessionMeta(sessionId, { permissionMode: mode })
+      // 显式切换到免审批才授予 CSLab Python 工具信任；切回 auto/plan 立即撤销。
+      if (mode === 'bypassPermissions') {
+        grantCsLabToolTrust(sessionId, current.cslabLabId)
+      } else {
+        revokeCsLabToolTrust(sessionId)
+      }
       // 若 session 正在跑，同步热切换运行时模式；失败时广播回滚后的权威状态。
       if (isAgentSessionActive(sessionId)) {
+        const previousMode = current.permissionMode ?? 'bypassPermissions'
         await updateAgentPermissionMode(sessionId, mode).catch((err) => {
           const restored = updateAgentSessionMeta(sessionId, { permissionMode: current.permissionMode })
+          // 热切换失败时同步回滚内存信任，避免权限与信任状态脱节。
+          if (previousMode === 'bypassPermissions') {
+            grantCsLabToolTrust(sessionId, current.cslabLabId)
+          } else {
+            revokeCsLabToolTrust(sessionId)
+          }
           publishAgentSessionProjection(restored)
           throw err
         })
@@ -4204,6 +4250,12 @@ export function registerIpcHandlers(): void {
           if (meta) {
             try {
               const updated = updateAgentSessionMeta(sessionId, { permissionMode: targetMode })
+              // 计划审批选择"完全自动"属于显式授权；选择其他模式则撤销 CSLab 工具信任。
+              if (targetMode === 'bypassPermissions') {
+                grantCsLabToolTrust(sessionId, meta.cslabLabId)
+              } else {
+                revokeCsLabToolTrust(sessionId)
+              }
               publishAgentSessionProjection(updated)
             } catch (err) {
               console.warn(`[IPC] ExitPlanMode 持久化 session 权限模式失败: sessionId=${sessionId}`, err)
@@ -6069,6 +6121,9 @@ export function registerIpcHandlers(): void {
   // 注册内容审核专区 IPC 处理器
   registerReviewIpc()
 
+  // 注册 CDUT Science (CSLab) IPC 处理器
+  registerCsLabIpc()
+
   // ===== CDUT 专区特区账户 =====
   // 特区账户与通用账户物理隔离，独立持久化于 ~/.cdutai/cdut-account.json
   ipcMain.handle(CDUT_ZONE_IPC_CHANNELS.GET_ACCOUNT, () => cdutAuthManager.getProfile())
@@ -6095,13 +6150,73 @@ export function registerIpcHandlers(): void {
     return { handled: resolveCdutGatekeeper(decision) }
   })
 
-  // ===== CDUT 专区 · 砚湖秒通（Yanhu Express）轻量级定制浏览器 =====
+  // 8 大业务域按需调用：直接调用教务业务域工具（支持已登录态真实抓取与未登录态/网络异常 Demo 数据回退）
+  ipcMain.handle(
+    CDUT_ZONE_IPC_CHANNELS.CALL_DOMAIN_TOOL,
+    async (_event, input: CdutToolInvokeParams): Promise<CdutDomainToolResult> => {
+      const { domain, params } = input
+      const profile = cdutAuthManager.getProfile()
+      const isOnline = profile.status === 'active' && !cdutDemoService.isActive()
+
+      if (isOnline) {
+        try {
+          const ses = session.fromPartition(CDUT_AUTH_PARTITION)
+          const result = await executeDomainTool(domain, ses, params)
+          if (result.success) {
+            return { ...result, isDemo: false }
+          }
+          console.warn(`[CDUT专区] 业务域 ${domain} 真实抓取未成功，自动回退高仿真演示数据:`, result.error)
+        } catch (error) {
+          console.warn(`[CDUT专区] 业务域 ${domain} 请求异常，自动回退高仿真演示数据:`, error)
+        }
+      }
+
+      // 演示数据无缝回退
+      const demoResult = cdutDemoService.execute(domain, params)
+      return { ...demoResult, isDemo: true }
+    },
+  )
+
+  // ===== 业务域离线缓存（SWR：抽屉打开先读缓存秒开，网络成功后原子落盘） =====
+  const CDUT_CACHE_PATHS: Record<CdutDomainCacheName, () => string> = {
+    schedule: getCdutScheduleCachePath,
+    grades: getCdutGradesCachePath,
+  }
+
+  ipcMain.handle(
+    CDUT_ZONE_IPC_CHANNELS.READ_DOMAIN_CACHE,
+    (_event, name: CdutDomainCacheName): unknown => {
+      const pathOf = CDUT_CACHE_PATHS[name]
+      if (!pathOf) return null
+      try {
+        return readJsonFileSafe<unknown>(pathOf())
+      } catch {
+        return null
+      }
+    },
+  )
+
+  ipcMain.handle(
+    CDUT_ZONE_IPC_CHANNELS.WRITE_DOMAIN_CACHE,
+    (_event, input: { name: CdutDomainCacheName; payload: unknown }): { success: boolean } => {
+      const pathOf = CDUT_CACHE_PATHS[input.name]
+      if (!pathOf || input.payload === null || typeof input.payload !== 'object') return { success: false }
+      try {
+        writeJsonFileAtomic(pathOf(), { savedAt: Date.now(), data: input.payload })
+        return { success: true }
+      } catch {
+        return { success: false }
+      }
+    },
+  )
+
+  // ===== CDUT 专区 · 智联万站（Yanhu Express）轻量级定制浏览器 =====
   // 前端 100% 纯净：仅暴露浏览器外壳所需通道；底层 CDP 能力静默预留、不提供任何调试 UI 入口。
   ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.INIT_OR_RESTORE, () => yanhuExpressManager.initOrRestore())
   ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.GET_TABS_STATE, () => yanhuExpressManager.getTabsState())
   ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.SHOW_VIEW, () => {
     const state = yanhuExpressManager.showView()
-    // 呈现砚湖秒通时同步唤起桌宠子窗口（紧凑包裹，随同主窗口生命周期）
+    // 呈现智联万站时同步唤起桌宠子窗口（紧凑包裹，随同主窗口生命周期）
     yanhuPetWindowManager.setPresented(true)
     return state
   })
@@ -6132,17 +6247,17 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.CREATE_TAB, (_event, input: YanhuCreateTabInput) =>
     yanhuExpressManager.createTab(input ?? {}),
   )
-  ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.ACTIVATE_TAB, (_event, input: YanhuTabRefInput) =>
-    yanhuExpressManager.activateTab(input.tabId),
+  ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.ACTIVATE_TAB, (_event, input?: YanhuTabRefInput) =>
+    yanhuExpressManager.activateTab(input?.tabId ?? ''),
   )
-  ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.CLOSE_TAB, (_event, input: YanhuTabRefInput) =>
-    yanhuExpressManager.closeTab(input.tabId),
+  ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.CLOSE_TAB, (_event, input?: YanhuTabRefInput) =>
+    yanhuExpressManager.closeTab(input?.tabId ?? ''),
   )
-  ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.CLOSE_OTHER_TABS, (_event, input: YanhuTabRefInput) =>
-    yanhuExpressManager.closeOtherTabs(input.tabId),
+  ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.CLOSE_OTHER_TABS, (_event, input?: YanhuTabRefInput) =>
+    yanhuExpressManager.closeOtherTabs(input?.tabId ?? ''),
   )
-  ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.CLOSE_RIGHT_TABS, (_event, input: YanhuCloseRightInput) =>
-    yanhuExpressManager.closeRightTabs(input.tabId),
+  ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.CLOSE_RIGHT_TABS, (_event, input?: YanhuCloseRightInput) =>
+    yanhuExpressManager.closeRightTabs(input?.tabId ?? ''),
   )
   ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.REORDER_TABS, (_event, input: YanhuReorderTabsInput) =>
     yanhuExpressManager.reorderTabs(input.orderedTabIds ?? []),
@@ -6195,15 +6310,13 @@ export function registerIpcHandlers(): void {
     runYanhuCdp(() => yanhuExpressManager.cdpExecuteScript(input?.tabId, input?.expression ?? '')),
   )
 
-  // ===== 砚湖秒通 · 桌宠「砚小龙」（阉割版 Pi 运行时 + 紧凑包裹子窗口） =====
-  // 视口同步：主渲染窗口测得砚湖秒通视口（CSS 像素），驱动桌宠子窗口贴合定位
+  // ===== 智联万站 · 桌宠「砚小龙」（阉割版 Pi 运行时 + 紧凑包裹子窗口） =====
+  // 视口同步：主渲染窗口测得智联万站视口（CSS 像素），驱动桌宠子窗口贴合定位
   ipcMain.handle(YANHU_EXPRESS_IPC_CHANNELS.PET_SYNC_VIEWPORT, (_event, rect: YanhuPetViewport) => {
-    if (rect) {
-      if (rect.width > 4 && rect.height > 4) {
-        yanhuPetWindowManager.setPresented(true)
-      }
-      yanhuPetWindowManager.syncViewport(rect)
-    }
+    // 仅同步几何：呈现态由 SHOW_VIEW / HIDE_VIEW / UPDATE_BOUNDS(visible) 单一来源驱动。
+    // 此前在此处 setPresented(true) 会让渲染层每帧上报视口都把桌宠重新置为呈现，
+    // 与隐藏指令互相打架，造成桌宠在拦截页/错误页 show/hide 抖动。
+    if (rect) yanhuPetWindowManager.syncViewport(rect)
     return { success: true }
   })
   // 桌宠渲染进程上报紧凑包裹几何（DIP）-> 主进程应用窗口 Bounds
@@ -6282,6 +6395,68 @@ export function registerIpcHandlers(): void {
     getGlobalStudyRetriever().invalidate(input.sessionId)
     return { success: true }
   })
+
+  // ===== AI 速课堂（Chrome 风格动态多 Tab / 思维导图 / 抽认卡 / 测验） =====
+  ipcMain.handle(STUDY_IPC_CHANNELS.GET_TABS, (_event, sessionId: string) => getStudyTabs(sessionId))
+
+  ipcMain.handle(
+    STUDY_IPC_CHANNELS.SAVE_TABS,
+    (_event, input: { sessionId: string; tabs: AiClassRightTabItem[]; activeTabId: string }) =>
+      saveStudyTabs(input.sessionId, input.tabs ?? [], input.activeTabId ?? ''),
+  )
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.GET_MINDMAP, (_event, input: { sessionId: string; mindmapId?: string }) =>
+    getStudyMindmap(input.sessionId, input.mindmapId),
+  )
+
+  ipcMain.handle(
+    STUDY_IPC_CHANNELS.SAVE_MINDMAP_COORDS,
+    (
+      _event,
+      input: { sessionId: string; mindmapId: string; coords: Record<string, { x: number; y: number }> },
+    ) => saveStudyMindmapCoords(input.sessionId, input.mindmapId, input.coords ?? {}),
+  )
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.EXPORT_OPML, async (_event, input: { sessionId: string; mindmapId?: string }) => {
+    const mindmap = getStudyMindmap(input.sessionId, input.mindmapId)
+    if (!mindmap) return { success: false, error: '未找到可导出的思维导图' }
+    const result = await dialog.showSaveDialog({
+      title: '导出思维导图（OPML 2.0）',
+      defaultPath: `${(mindmap.title || 'mindmap').replace(/[\\/:*?"<>|]/g, '_')}.opml`,
+      filters: [{ name: 'OPML 2.0', extensions: ['opml'] }],
+    })
+    if (result.canceled || !result.filePath) return { success: false, canceled: true }
+    await writeFile(result.filePath, mindMapToOpml(mindmap), 'utf-8')
+    return { success: true, filePath: result.filePath }
+  })
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.GET_FLASHCARDS, (_event, input: { sessionId: string; deckId?: string }) =>
+    getStudyFlashcards(input.sessionId, input.deckId),
+  )
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.UPDATE_CARD_RATING, (_event, input: StudyCardRatingInput) =>
+    updateStudyCardRating(input),
+  )
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.GET_QUIZ, (_event, input: { sessionId: string; quizId?: string }) =>
+    getStudyQuiz(input.sessionId, input.quizId),
+  )
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.SUBMIT_QUIZ_ANSWER, (_event, input: StudyQuizAnswerInput) =>
+    submitStudyQuizAnswer(input),
+  )
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.RESET_QUIZ, (_event, input: { sessionId: string; quizId: string }) =>
+    resetStudyQuiz(input),
+  )
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.GENERATE_ARTIFACT, async (_event, input: StudyGenerateArtifactInput) =>
+    generateStudyArtifact(input),
+  )
+
+  ipcMain.handle(STUDY_IPC_CHANNELS.LIST_ARTIFACTS, (_event, sessionId: string) =>
+    listStudyArtifacts(sessionId),
+  )
 
   // ===== AI 速课堂（专属工作区 / 会话 / 资料树图谱） =====
   ipcMain.handle(CDUT_AI_CLASS_IPC_CHANNELS.LIST_SESSIONS, () => {
@@ -6389,8 +6564,15 @@ export function registerIpcHandlers(): void {
       if (days > 0) {
         const archivedChats = autoArchiveConversations(days)
         const archivedSessions = autoArchiveAgentSessions(days)
-        if (archivedChats + archivedSessions > 0) {
+        const archivedTotal = archivedChats + archivedSessions
+        if (archivedTotal > 0) {
           console.log(`[自动归档] 已归档 ${archivedChats} 个对话, ${archivedSessions} 个 Agent 会话`)
+          // 静默自动归档发生时向所有窗口广播未读通知，点亮侧栏「已归档列表」红点
+          for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) {
+              window.webContents.send(IPC_CHANNELS.ARCHIVED_UNREAD_CHANGED, archivedTotal)
+            }
+          }
         }
       }
     } catch (error) {

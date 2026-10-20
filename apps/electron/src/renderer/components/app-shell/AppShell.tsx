@@ -21,10 +21,13 @@ import { automationFormAtom } from '@/atoms/automation-atoms'
 import { activeViewAtom } from '@/atoms/active-view'
 import { leftSidebarWidthAtom } from '@/atoms/sidebar-atoms'
 import { sidebarCollapsedAtom } from '@/atoms/tab-atoms'
-import { detectIsWindows } from '@profer/ui'
+import { cslabAuthAtom } from '@/atoms/cslab-atoms'
+import { detectIsMac, detectIsWindows } from '@profer/ui'
+import { MacTrafficLights } from './MacTrafficLights'
 import { interfaceVariantAtom } from '@/atoms/theme'
 import { usePanelAutoLayout } from '@/hooks/usePanelAutoLayout'
 import { cn } from '@/lib/utils'
+import { Z_LAYER } from '@profer/ui'
 
 const MIN_RIGHT_PANEL_WIDTH = 300
 const MAX_RIGHT_PANEL_WIDTH = 560
@@ -76,12 +79,16 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const isTeamWorkspace = false // 团队工作区已下线（原 TEAM_WORKSPACE_UI_ENABLED 分支移除）
   // 定时任务表单打开时隐藏右侧文件面板，让中间区域扩展到全宽（表单内含自己的右栏配置）
   const activeView = useAtomValue(activeViewAtom)
+  const cslabVerified = useAtomValue(cslabAuthAtom).isVerified
+  // CDUT Science 验密通过后进入实验室选择页，完全隐藏左侧主侧边栏
+  const isCsLabImmersive = activeView === 'cdut-science' && cslabVerified
   const showRightPanel = appMode === 'agent' && !!currentSessionId && !automationForm.open && activeView === 'conversations'
   // 文件面板/浏览器仅在 agent 个人视图参与布局判定（团队/规划/自动化表单时右侧面板不渲染）
   const filePanelActive = !isTeamWorkspace && showRightPanel
   // 统一自适应可见性：窗口 resize 监听 + 浏览器/文件面板可见性计算（挂载于此布局容器）
   usePanelAutoLayout({ filePanelActive })
   const isWindows = React.useMemo(() => detectIsWindows(), [])
+  const isMac = React.useMemo(() => detectIsMac(), [])
 
   // 窗口标题设为用户名
   React.useEffect(() => {
@@ -215,26 +222,27 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
           局部 drag region，因此全局层不能覆盖任何实际交互区域。 */}
       <div
         className={cn(
-          'titlebar-drag-region fixed top-0 left-0 h-2 z-50',
+          `titlebar-drag-region fixed top-0 left-0 h-2 ${Z_LAYER.shellTopDrag}`,
           isWindows ? 'right-[126px]' : 'right-0'
         )}
       />
 
       <div className="shell-bg h-screen w-screen flex overflow-clip bg-surface-shell">
-        {/* 左侧边栏：可折叠，可拖拽调整宽度 */}
+        {/* 左侧边栏：可折叠，可拖拽调整宽度；CSLab 授权后完全隐藏 */}
+        {!isCsLabImmersive && (
         <div
           className={cn(
             isClassic ? 'p-2 pr-0' : '',
             // 收起 rail 必须压过其右侧的分隔线；冷启动直接恢复收起状态时，
             // 分隔线处于更高层会裁掉 rail 最右侧，造成整列图标视觉上向左偏移。
-            sidebarCollapsed ? 'relative z-[62] flex-none crt-sidebar' : 'relative z-[70] flex-none crt-sidebar',
+            sidebarCollapsed ? `relative ${Z_LAYER.shellRail} flex-none crt-sidebar` : `relative ${Z_LAYER.shell} flex-none crt-sidebar`,
           )}
         >
           <LeftSidebar width={clampedLeftSidebarWidth} noTransition={isDraggingLeftSidebar} />
           {/* 左栏复用主区既有的 8px 外边距作为拖动命中区：不额外占宽度，也不覆盖侧栏滚动条。 */}
           {!sidebarCollapsed && (
             <div
-              className="titlebar-no-drag absolute left-full top-0 bottom-0 z-[80] w-1.5 translate-x-px cursor-col-resize pointer-events-auto"
+              className={`titlebar-no-drag absolute left-full top-0 bottom-0 ${Z_LAYER.shellResizer} w-1.5 translate-x-px cursor-col-resize pointer-events-auto`}
               onMouseDown={handleLeftSidebarMouseDown}
               role="separator"
               aria-orientation="vertical"
@@ -242,9 +250,17 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             />
           )}
         </div>
+        )}
+
+        {/* macOS 红绿灯原本挂在侧栏内：CSLab 沉浸态隐藏侧栏后由这里接管 */}
+        {isCsLabImmersive && isMac && (
+          <div className="fixed left-0 top-0 z-[999] h-0 w-0">
+            <MacTrafficLights />
+          </div>
+        )}
 
         {/* 中间容器 */}
-        <div className="main-area-glass-host flex-1 min-w-0 p-2 relative z-[60]">
+        <div className={cn('main-area-glass-host flex-1 min-w-0 relative', isCsLabImmersive ? 'p-0' : 'p-2', Z_LAYER.shellContent)}>
           <MainArea />
         </div>
 
@@ -257,15 +273,15 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
               // 上下边距始终保留，避免收起瞬间面板从上下各扩展 8px；仅切换右侧
               // 横向 padding，并让 SidePanel 自身负责宽度过渡，保持收起方向纯水平。
               filePanelVisible
-                ? 'relative z-[70] flex items-stretch crt-sidebar py-2 pr-2 pl-0'
-                : 'relative z-[60] flex items-stretch crt-sidebar py-2 pr-0 pl-0'
+                ? `relative ${Z_LAYER.shell} flex items-stretch crt-sidebar py-2 pr-2 pl-0`
+                : `relative ${Z_LAYER.shellContent} flex items-stretch crt-sidebar py-2 pr-0 pl-0`
             )}
           >
             <RightSidePanel width={clampedRightPanelWidth} />
             {/* 透明命中区收窄为 6px，仅落在现有中缝中心，不参与布局也不产生额外留白。 */}
             {filePanelVisible && (
               <div
-                className="titlebar-no-drag absolute -left-[7px] top-0 bottom-0 z-[80] w-1.5 cursor-col-resize pointer-events-auto"
+                className={`titlebar-no-drag absolute -left-[7px] top-0 bottom-0 ${Z_LAYER.shellResizer} w-1.5 cursor-col-resize pointer-events-auto`}
                 onMouseDown={handleMouseDown}
                 role="separator"
                 aria-orientation="vertical"
