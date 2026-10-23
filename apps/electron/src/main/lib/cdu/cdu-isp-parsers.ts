@@ -116,7 +116,28 @@ export function parseScore(html: string): CduIspScoreData {
   return data
 }
 
-/** 解析首页通知行（发布时间/标题/来源/已读） */
+/** 从通知行里找详情链接；优先标题/「点击阅读」附近的 anchor，其余链接兜底。 */
+function resolveNoticeUrl(rowHtml: string, title: string): string | undefined {
+  const anchors = [...rowHtml.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
+  const candidates = anchors.map((match) => ({
+    href: match[1] ?? '',
+    text: stripTags(match[2] ?? '').replace(/\s+/g, ' '),
+  }))
+  const looksLikeDetail = (href: string): boolean => /(?:detail|show|view|read|news|notice|id=)/i.test(href)
+  const preferred = candidates.find(
+    ({ href, text }) => looksLikeDetail(href) && (text.includes(title) || text.includes('点击阅读')),
+  )
+  const fallback = candidates.find(({ href }) => looksLikeDetail(href))
+  const href = preferred?.href ?? fallback?.href
+  if (!href) return undefined
+  try {
+    return new URL(href, 'https://xsswzx.cdu.edu.cn/ispstu/com_user/').toString()
+  } catch {
+    return undefined
+  }
+}
+
+/** 解析首页通知行（发布时间/标题/来源/已读/详情地址） */
 export function parseNotices(html: string): CduIspNotice[] {
   const notices: CduIspNotice[] = []
   const tables = html.match(/<table[\s\S]*?<\/table>/g) ?? []
@@ -126,11 +147,13 @@ export function parseNotices(html: string): CduIspNotice[] {
     const text = stripTags(row[1] ?? '').replace(/\s+/g, ' ')
     const titleMatch = /通知标题：\s*([^【]+?)(?:【点击阅读】)?\s*通知来源：/.exec(text)
     if (!titleMatch) continue
+    const title = (titleMatch[1] ?? '').trim()
     notices.push({
-      title: (titleMatch[1] ?? '').trim(),
+      title,
       publishDate: /发布时间：\s*([\d-]+)/.exec(text)?.[1],
       source: /通知来源：\s*([^已]*?)(?:已阅读|未阅读)/.exec(text)?.[1]?.trim(),
       read: text.includes('已阅读'),
+      url: resolveNoticeUrl(row[1] ?? '', title),
     })
   }
   return notices

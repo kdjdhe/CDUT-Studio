@@ -7,7 +7,9 @@
  */
 
 import { atom } from 'jotai'
+import { atomWithStorage } from 'jotai/utils'
 import type { CduAccountProfile, CduOverviewData, CduIspData } from '@profer/shared'
+import type { CduDashboardPrefs } from '@/components/cdu-zone/cdu-dashboard'
 
 /** CDU 特区账户全局状态（默认未连接） */
 export const cduAccountAtom = atom<CduAccountProfile>({
@@ -28,7 +30,7 @@ export const cduOverviewErrorAtom = atom<string | null>(null)
 /** 手动选择查看的周次；null 表示展示全部周次 */
 export const cduTimetableWeekAtom = atom<number | null>(null)
 
-/** ISP 聚合数据（挂全局 atom：Tab 切换不丢，主进程 TTL 缓存兜底） */
+/** ISP 聚合数据（登录后按需拉取；隐藏全部 ISP 组件时不访问站点） */
 export const cduIspDataAtom = atom<CduIspData | null>(null)
 
 /** ISP 数据拉取中标记 */
@@ -37,5 +39,11 @@ export const cduIspLoadingAtom = atom<boolean>(false)
 /** ISP 数据拉取错误（统一认证过期/解析失败等） */
 export const cduIspErrorAtom = atom<string | null>(null)
 
-/** ISP 强制刷新信号（自增即触发 CduIspSections force 重拉） */
-export const cduIspRefreshAtom = atom(0)
+/**
+ * 展示偏好：按学号隔离，只保存在本机渲染进程。
+ * 结构见 cdu-dashboard.tsx；缺省账户使用 __default__ 键。
+ */
+export const cduDashboardPrefsAtom = atomWithStorage<Record<string, CduDashboardPrefs>>(
+  'cdu-dashboard-prefs',
+  {},
+)

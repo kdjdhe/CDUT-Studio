@@ -164,6 +164,7 @@ import { cduAuthManager } from './lib/cdu/cdu-auth-manager'
 import { cduJwClient } from './lib/cdu/cdu-jw-client'
 import { cduIspClient } from './lib/cdu/cdu-isp-client'
 import { getOfflineOverviewSnapshot } from './lib/cdu/cdu-cache'
+import { closeCduDetailWindows, openCduDetailWindow } from './lib/cdu/cdu-detail-window'
 import { resolveCdutGatekeeper } from './lib/cdut/cdut-gatekeeper'
 import { resolveCdutMutationConfirm } from './lib/cdut/cdut-mutation-guard'
 import {
@@ -6513,10 +6514,16 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.handle(CDU_ZONE_IPC_CHANNELS.GET_SAVED_ACCOUNT, () => cduAuthManager.getSavedAccount())
   ipcMain.handle(CDU_ZONE_IPC_CHANNELS.LOGIN, async (_event, input: CduLoginInput) => {
+    closeCduDetailWindows()
     return await cduAuthManager.login(input)
   })
   ipcMain.handle(CDU_ZONE_IPC_CHANNELS.LOGOUT, async () => {
     await cduAuthManager.logout()
+    closeCduDetailWindows()
+  })
+  ipcMain.handle(CDU_ZONE_IPC_CHANNELS.OPEN_PAGE, (_event, url: unknown) => {
+    if (typeof url !== 'string') return { success: false, error: '无效的页面地址' }
+    return openCduDetailWindow(url)
   })
   ipcMain.handle(CDU_ZONE_IPC_CHANNELS.FETCH_OVERVIEW, async (_event, force?: boolean) => {
     return await cduJwClient.fetchOverview(force === true)

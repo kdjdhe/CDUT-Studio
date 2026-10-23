@@ -1,5 +1,5 @@
 /**
- * CduIspSections — CDU 专区「ISP 服务平台」板块
+ * CduIspSections — CDU 专区「ISP 服务平台」组件
  *
  * 数据来自主进程 cdu-isp-client（进站换票 → webindex 抠 token → 四页解析）：
  *   - 素质分（my_score.asp）：当前月达标状态 + 逐月得分 + 明细项（解析自页面隐藏字段）
@@ -10,15 +10,59 @@
  */
 
 import * as React from 'react'
-import { BookOpen, ClipboardCheck, Bell, Loader2, RefreshCw, AlertCircle, Wallet } from 'lucide-react'
+import { BookOpen, ClipboardCheck, Bell, Loader2, RefreshCw, AlertCircle, Wallet, ChevronRight } from 'lucide-react'
 import { useAtom } from 'jotai'
 import type { CduIspData } from '@profer/shared'
 import { Button } from '@profer/ui/primitives/button'
 import { EmptyHint, SectionCard } from './CduZoneView'
-import { cduIspDataAtom, cduIspErrorAtom, cduIspLoadingAtom, cduIspRefreshAtom } from '@/atoms/cdu-atoms'
+import { cduIspDataAtom, cduIspErrorAtom, cduIspLoadingAtom } from '@/atoms/cdu-atoms'
 
-/** 素质分板块 */
-function ScoreSection({ data }: { data: NonNullable<CduIspData['score']> }): React.ReactElement {
+/**
+ * ISP 数据获取：整个专区只调用一次，供各展示组件共享。
+ * enabled=false（未登录）时不发起请求；登录后自动拉取，失败不自动重试。
+ */
+export function useCduIspData(enabled: boolean): {
+  data: CduIspData | null
+  loading: boolean
+  error: string | null
+  refresh: (force?: boolean) => Promise<void>
+} {
+  const [data, setData] = useAtom(cduIspDataAtom)
+  const [loading, setLoading] = useAtom(cduIspLoadingAtom)
+  const [error, setError] = useAtom(cduIspErrorAtom)
+
+  const load = React.useCallback(
+    async (force = false): Promise<void> => {
+      setLoading(true)
+      setError(null)
+      try {
+        setData(await window.electronAPI.cduZone.fetchIsp(force))
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [setData, setLoading, setError],
+  )
+
+  React.useEffect(() => {
+    if (enabled && !data) void load()
+  }, [enabled, data, load])
+
+  return { data, loading, error, refresh: load }
+}
+
+/** 素质分组件 */
+export function IspScoreSection({ data }: { data: CduIspData['score'] }): React.ReactElement {
+  if (!data) {
+    return (
+      <SectionCard icon={<ClipboardCheck className="size-4" />} title="素质分">
+        <EmptyHint text="暂无素质分数据" />
+      </SectionCard>
+    )
+  }
+
   const withDetail = [...data.months].filter((m) => m.items.length > 0 || (m.score && m.score !== '暂未生成'))
   const current = data.months.find((m) => m.month === data.currentMonth)
 
@@ -77,8 +121,14 @@ function ScoreSection({ data }: { data: NonNullable<CduIspData['score']> }): Rea
   )
 }
 
-/** 图书借阅板块 */
-function BooksSection({ books }: { books: CduIspData['books'] }): React.ReactElement {
+/** 图书借阅组件 */
+export function IspBooksSection({
+  books,
+  onSelectBook,
+}: {
+  books: CduIspData['books']
+  onSelectBook?: (book: CduIspData['books'][number]) => void
+}): React.ReactElement {
   return (
     <SectionCard icon={<BookOpen className="size-4" />} title="图书借阅" extra={`${books.length} 册`}>
       {books.length === 0 ? (
@@ -86,7 +136,20 @@ function BooksSection({ books }: { books: CduIspData['books'] }): React.ReactEle
       ) : (
         <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
           {books.map((book, index) => (
-            <div key={`${book.title}-${index}`} className="rounded-xl px-2 py-1.5 hover:bg-muted/60">
+            <div
+              key={`${book.title}-${index}`}
+              className="cursor-pointer rounded-xl px-2 py-1.5 hover:bg-muted/60"
+              onClick={() => onSelectBook?.(book)}
+              role={onSelectBook ? 'button' : undefined}
+              tabIndex={onSelectBook ? 0 : undefined}
+              onKeyDown={(event) => {
+                if (!onSelectBook) return
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onSelectBook(book)
+                }
+              }}
+            >
               <div className="flex items-baseline gap-2">
                 <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{book.title}</span>
                 {book.remainingDays && (
@@ -101,6 +164,7 @@ function BooksSection({ books }: { books: CduIspData['books'] }): React.ReactEle
                     {book.remainingDays}
                   </span>
                 )}
+                {onSelectBook && <ChevronRight className="size-3 flex-shrink-0 text-muted-foreground/40" />}
               </div>
               <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-muted-foreground">
                 {book.location && <span>{book.location}</span>}
@@ -115,8 +179,16 @@ function BooksSection({ books }: { books: CduIspData['books'] }): React.ReactEle
   )
 }
 
-/** 困难认定板块 */
-function FamilySection({ data }: { data: NonNullable<CduIspData['family']> }): React.ReactElement {
+/** 困难认定组件 */
+export function IspFamilySection({ data }: { data: CduIspData['family'] }): React.ReactElement {
+  if (!data) {
+    return (
+      <SectionCard icon={<Wallet className="size-4" />} title="家庭经济困难认定">
+        <EmptyHint text="暂无认定数据" />
+      </SectionCard>
+    )
+  }
+
   return (
     <SectionCard icon={<Wallet className="size-4" />} title="家庭经济困难认定" extra={data.window ? `窗口 ${data.window.slice(0, 22)}…` : undefined}>
       <div className="space-y-2">
@@ -155,16 +227,35 @@ function FamilySection({ data }: { data: NonNullable<CduIspData['family']> }): R
   )
 }
 
-/** 通知板块 */
-function IspNoticesSection({ data }: { data: CduIspData }): React.ReactElement {
+/** ISP 通知组件 */
+export function IspNoticesSection({
+  notices,
+  onSelectNotice,
+}: {
+  notices: CduIspData['notices']
+  onSelectNotice?: (notice: CduIspData['notices'][number]) => void
+}): React.ReactElement {
   return (
-    <SectionCard icon={<Bell className="size-4" />} title="ISP 通知" extra={data.notices.length > 0 ? `${data.notices.length} 条` : undefined}>
-      {data.notices.length === 0 ? (
+    <SectionCard icon={<Bell className="size-4" />} title="ISP 通知" extra={notices.length > 0 ? `${notices.length} 条` : undefined}>
+      {notices.length === 0 ? (
         <EmptyHint text="暂无通知" />
       ) : (
         <div className="space-y-1">
-          {data.notices.map((notice, index) => (
-            <div key={`${notice.title}-${index}`} className="flex items-center gap-2.5 rounded-xl px-2 py-1.5 hover:bg-muted/60">
+          {notices.map((notice, index) => (
+            <div
+              key={`${notice.title}-${index}`}
+              className="flex cursor-pointer items-center gap-2.5 rounded-xl px-2 py-1.5 hover:bg-muted/60"
+              onClick={() => onSelectNotice?.(notice)}
+              role={onSelectNotice ? 'button' : undefined}
+              tabIndex={onSelectNotice ? 0 : undefined}
+              onKeyDown={(event) => {
+                if (!onSelectNotice) return
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onSelectNotice(notice)
+                }
+              }}
+            >
               <span
                 className={
                   'size-1.5 flex-shrink-0 rounded-full ' + (notice.read ? 'bg-muted-foreground/30' : 'bg-sky-500')
@@ -173,6 +264,7 @@ function IspNoticesSection({ data }: { data: CduIspData }): React.ReactElement {
               <span className="min-w-0 flex-1 truncate text-xs text-foreground">{notice.title}</span>
               {notice.source && <span className="hidden flex-shrink-0 text-[10px] text-muted-foreground sm:inline">{notice.source}</span>}
               {notice.publishDate && <span className="flex-shrink-0 text-[11px] text-muted-foreground">{notice.publishDate}</span>}
+              {onSelectNotice && <ChevronRight className="size-3 flex-shrink-0 text-muted-foreground/40" />}
             </div>
           ))}
         </div>
@@ -181,83 +273,44 @@ function IspNoticesSection({ data }: { data: CduIspData }): React.ReactElement {
   )
 }
 
-/** ISP 板块主体（含拉取状态与错误处理，由 CduZoneView 在 ISP Tab 下挂载） */
-export function CduIspSections(): React.ReactElement {
-  // 数据挂全局 atom：切走再切回不重新请求；刷新按钮 force 绕过主进程缓存
-  const [data, setData] = useAtom(cduIspDataAtom)
-  const [loading, setLoading] = useAtom(cduIspLoadingAtom)
-  const [error, setError] = useAtom(cduIspErrorAtom)
-  const [refreshTick, setRefreshTick] = useAtom(cduIspRefreshAtom)
-
-  const load = React.useCallback(async (force = false): Promise<void> => {
-    setLoading(true)
-    setError(null)
-    try {
-      setData(await window.electronAPI.cduZone.fetchIsp(force))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
-    }
-  }, [setData, setLoading, setError])
-
-  React.useEffect(() => {
-    if (!data && !error) {
-      void load()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // 外部（顶栏刷新按钮）触发强制重拉
-  React.useEffect(() => {
-    if (refreshTick > 0) {
-      void load(true)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshTick])
-
-  return (
-    <div className="space-y-4">
-      {error && (
-        <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-400">
-          <AlertCircle className="size-4 flex-shrink-0" />
-          {error}
-          <Button variant="ghost" size="sm" onClick={() => void load(true)} className="ml-auto gap-1">
-            <RefreshCw className="size-3" />
-            重试
-          </Button>
-        </div>
-      )}
-      {loading && !data && (
-        <div className="flex items-center justify-center gap-2 rounded-2xl bg-card py-10 text-sm text-muted-foreground shadow-sm">
-          <Loader2 className="size-4 animate-spin" />
-          正在进入 ISP 服务平台并解析页面…
-        </div>
-      )}
-      {data && (
-        <>
-          {data.partialErrors.length > 0 && (
-            <div className="rounded-xl bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-700 dark:text-amber-400">
-              部分数据解析失败：{data.partialErrors.join('；')}
-            </div>
-          )}
-          <div className="grid gap-4 lg:grid-cols-2">
-            {data.score && <ScoreSection data={data.score} />}
-            <div className="space-y-4">
-              <BooksSection books={data.books} />
-              {data.family && <FamilySection data={data.family} />}
-            </div>
-          </div>
-          <IspNoticesSection data={data} />
-          <div className="pb-2 text-center text-[11px] text-muted-foreground/60">
-            数据更新于 {new Date(data.fetchedAt).toLocaleTimeString('zh-CN')} · 服务端渲染页面只读解析 ·{' '}
-            <button type="button" onClick={() => void load(true)} className="inline-flex items-center gap-0.5 text-sky-600 hover:underline dark:text-sky-400">
-              <RefreshCw className="size-3" />
-              强制刷新
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  )
+/** ISP 拉取状态条（由专区在服务分组顶部复用） */
+export function CduIspStatus({
+  loading,
+  error,
+  data,
+  onRetry,
+}: {
+  loading: boolean
+  error: string | null
+  data: CduIspData | null
+  onRetry: () => void
+}): React.ReactElement | null {
+  if (loading && !data) {
+    return (
+      <div className="flex items-center justify-center gap-2 rounded-2xl bg-card py-8 text-sm text-muted-foreground shadow-sm">
+        <Loader2 className="size-4 animate-spin" />
+        正在进入 ISP 服务平台并解析页面…
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-400">
+        <AlertCircle className="size-4 flex-shrink-0" />
+        {error}
+        <Button variant="ghost" size="sm" onClick={onRetry} className="ml-auto gap-1">
+          <RefreshCw className="size-3" />
+          重试
+        </Button>
+      </div>
+    )
+  }
+  if (data?.partialErrors.length) {
+    return (
+      <div className="rounded-xl bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-700 dark:text-amber-400">
+        部分数据解析失败：{data.partialErrors.join('；')}
+      </div>
+    )
+  }
+  return null
 }

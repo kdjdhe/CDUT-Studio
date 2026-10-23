@@ -1,11 +1,12 @@
 /**
  * CduZoneView — CDU 专区主界面（成都大学）
  *
- * 结构：顶栏拖拽区 + 主视图（未登录：品牌区 + 登录卡；已登录：账户条 + 教务数据看板）。
+ * 结构：顶栏拖拽区 + 主视图（未登录：品牌区 + 登录卡；已登录：统一身份认证账户框架
+ * + 子服务数智教务 / ISP 的组件看板）。
  * - 未登录态：左侧品牌愿景（校训 + 能力矩阵），右侧登录悬浮卡片（学号 / 密码 / 记住密码，
  *   主进程纯 HTTP 静默驱动统一身份认证 CAS）。
- * - 已登录态：账户信息条（姓名 / 学号 / 学期 / 状态）+ 四大数据板块
- *   （学期课表 / 全部成绩 / 考试安排 / 教务通知）。
+ * - 已登录态：账户信息条（姓名 / 学号 / 学期 / 状态）+ 按子服务分组的组件；
+ *   用户可在“自定义”中开关组件、调整组内顺序，偏好按学号保存在本机。
  *
  * 如实标注：状态 `active` 表示最近一次认证成功且后台静默保活心跳正常；
  * 本客户端不嗅探内网 Cookie，密码仅在勾选时经 OS 级加密落盘；
@@ -29,26 +30,57 @@ import {
   RefreshCw,
   School,
   ShieldCheck,
+  SlidersHorizontal,
 } from 'lucide-react'
-import type { CduAccountProfile, CduMfaQrPayload, CduOverviewData } from '@profer/shared'
+import type { CduAccountProfile, CduIspData, CduMfaQrPayload, CduOverviewData } from '@profer/shared'
 import { Button } from '@profer/ui/primitives/button'
 import { Input } from '@profer/ui/primitives/input'
 import { WindowControlsHost } from '@/components/WindowControlsTemplate'
-import { CduIspSections } from './CduIspSections'
+import { CduDashboardSettings } from './CduDashboardSettings'
+import { CduDetailDialog, type CduDetailField } from './CduDetailDialog'
+import {
+  CduIspStatus,
+  IspBooksSection,
+  IspFamilySection,
+  IspNoticesSection,
+  IspScoreSection,
+  useCduIspData,
+} from './CduIspSections'
+import {
+  CDU_DEFAULT_PREFS,
+  CDU_DASHBOARD_SERVICES,
+  normalizeCduDashboardPrefs,
+  visibleCduDashboardComponents,
+  type CduDashboardComponentId,
+  type CduDashboardPrefs,
+} from './cdu-dashboard'
 import {
   cduAccountAtom,
+  cduDashboardPrefsAtom,
+  cduIspDataAtom,
+  cduIspErrorAtom,
+  cduIspLoadingAtom,
   cduOverviewAtom,
   cduOverviewErrorAtom,
-  cduIspRefreshAtom,
   cduOverviewLoadingAtom,
   cduTimetableWeekAtom,
 } from '@/atoms/cdu-atoms'
 
-/** 专区数据源 Tab：教务系统（szjw）/ ISP 服务平台（xsswzx） */
-type CduZoneTab = 'jw' | 'isp'
-
 /** 星期标签（index 对齐 weekday 1-7） */
 const WEEKDAY_LABELS = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日']
+
+/** 学校页面入口：详情窗口共享 CDU 已登录会话。 */
+const CDU_JW_HOME = 'https://szjw.cdu.edu.cn/admin/'
+const CDU_ISP_HOME = 'https://xsswzx.cdu.edu.cn/ispstu/com_user/main.asp'
+const CDU_ISP_BOOKS = 'https://xsswzx.cdu.edu.cn/ispstu/com_user/stu_tsjy.asp'
+
+interface CduDetailState {
+  title: string
+  subtitle?: string
+  fields: CduDetailField[]
+  actionLabel?: string
+  actionUrl?: string
+}
 
 /** 账户状态徽章文案与配色 */
 function statusMeta(status: CduAccountProfile['status']): { label: string; className: string } {
@@ -296,11 +328,13 @@ function ProfileBar({
   onRefresh,
   refreshing,
   onLogout,
+  onCustomize,
 }: {
   account: CduAccountProfile
   onRefresh: () => void
   refreshing: boolean
   onLogout: () => void
+  onCustomize: () => void
 }): React.ReactElement {
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-2xl bg-card px-5 py-4 shadow-sm">
@@ -320,6 +354,10 @@ function ProfileBar({
         </span>
       )}
       <div className="ml-auto flex items-center gap-1.5">
+        <Button variant="ghost" size="sm" onClick={onCustomize} className="gap-1.5 text-muted-foreground">
+          <SlidersHorizontal className="size-3.5" />
+          自定义
+        </Button>
         <Button variant="ghost" size="sm" onClick={onRefresh} disabled={refreshing} className="gap-1.5 text-muted-foreground">
           <RefreshCw className={refreshing ? 'size-3.5 animate-spin' : 'size-3.5'} />
           刷新
@@ -426,7 +464,13 @@ function courseTone(name: string): string {
 }
 
 /** 按星期和节次排列的周课表；默认定位校历本周（getXlzc 官方周次），支持周间切换。 */
-function TimetableSection({ overview }: { overview: CduOverviewData }): React.ReactElement {
+function TimetableSection({
+  overview,
+  onSelectCourse,
+}: {
+  overview: CduOverviewData
+  onSelectCourse?: (course: TimetableCourse) => void
+}): React.ReactElement {
   const [selectedWeek, setSelectedWeek] = useAtom(cduTimetableWeekAtom)
   const currentWeek = overview.currentWeek ?? null
   // 周选择器范围：数据周次 ∪ 校历本周 ∪ 常规 20 周，覆盖无课周浏览
@@ -587,9 +631,19 @@ function TimetableSection({ overview }: { overview: CduOverviewData }): React.Re
                       {dayBlocks.map((block, blockIndex) => (
                         <div
                           key={`${block.course.id}-${block.start}-${blockIndex}`}
-                          className={`z-[1] m-0.5 min-w-0 overflow-hidden rounded-lg border-l-[3px] px-1.5 py-1 shadow-sm ${courseTone(block.course.courseName)}`}
+                          className={`z-[1] m-0.5 min-w-0 overflow-hidden rounded-lg border-l-[3px] px-1.5 py-1 shadow-sm ${courseTone(block.course.courseName)} ${onSelectCourse ? 'cursor-pointer transition-[filter] hover:brightness-105' : ''}`}
                           style={{ gridRow: `${block.start} / span ${block.end - block.start + 1}`, gridColumn: block.lane + 1 }}
                           title={[block.course.courseName, `第 ${block.start}${block.end > block.start ? `-${block.end}` : ''} 节`, block.course.teacher, block.course.classroom, block.course.weeks && `${block.course.weeks} 周`].filter(Boolean).join(' · ')}
+                          onClick={() => onSelectCourse?.(block.course)}
+                          role={onSelectCourse ? 'button' : undefined}
+                          tabIndex={onSelectCourse ? 0 : undefined}
+                          onKeyDown={(event) => {
+                            if (!onSelectCourse) return
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              onSelectCourse(block.course)
+                            }
+                          }}
                         >
                           <div className="line-clamp-2 text-[11px] font-semibold leading-tight">{block.course.courseName}</div>
                           <div className="mt-1 space-y-0.5 text-[10px] leading-tight opacity-75">
@@ -623,7 +677,13 @@ function TimetableSection({ overview }: { overview: CduOverviewData }): React.Re
 }
 
 /** 全部成绩 */
-function GradesSection({ overview }: { overview: CduOverviewData }): React.ReactElement {
+function GradesSection({
+  overview,
+  onSelectGrade,
+}: {
+  overview: CduOverviewData
+  onSelectGrade?: (grade: CduOverviewData['grades'][number]) => void
+}): React.ReactElement {
   return (
     <SectionCard
       icon={<ClipboardList className="size-4" />}
@@ -635,7 +695,20 @@ function GradesSection({ overview }: { overview: CduOverviewData }): React.React
       ) : (
         <div className="max-h-72 space-y-1 overflow-y-auto pr-1">
           {overview.grades.map((grade, index) => (
-            <div key={`${grade.id}-${index}`} className="flex items-center gap-3 rounded-xl px-2 py-1.5 hover:bg-muted/60">
+            <div
+              key={`${grade.id}-${index}`}
+              className="flex cursor-pointer items-center gap-3 rounded-xl px-2 py-1.5 hover:bg-muted/60"
+              onClick={() => onSelectGrade?.(grade)}
+              role={onSelectGrade ? 'button' : undefined}
+              tabIndex={onSelectGrade ? 0 : undefined}
+              onKeyDown={(event) => {
+                if (!onSelectGrade) return
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onSelectGrade(grade)
+                }
+              }}
+            >
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs font-medium text-foreground">{grade.courseName}</div>
                 <div className="text-[11px] text-muted-foreground">{grade.semester}</div>
@@ -651,6 +724,7 @@ function GradesSection({ overview }: { overview: CduOverviewData }): React.React
               >
                 {grade.totalScore}
               </span>
+              {onSelectGrade && <ChevronRight className="size-3 flex-shrink-0 text-muted-foreground/40" />}
             </div>
           ))}
         </div>
@@ -671,7 +745,13 @@ function gradeScoreTone(score: string): string {
 }
 
 /** 考试安排 */
-function ExamsSection({ overview }: { overview: CduOverviewData }): React.ReactElement {
+function ExamsSection({
+  overview,
+  onSelectExam,
+}: {
+  overview: CduOverviewData
+  onSelectExam?: (exam: CduOverviewData['exams'][number]) => void
+}): React.ReactElement {
   return (
     <SectionCard icon={<Bell className="size-4" />} title="考试安排">
       {overview.exams.length === 0 ? (
@@ -679,11 +759,25 @@ function ExamsSection({ overview }: { overview: CduOverviewData }): React.ReactE
       ) : (
         <div className="space-y-1.5">
           {overview.exams.map((exam, index) => (
-            <div key={`${exam.id}-${index}`} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded-xl bg-muted/60 px-3 py-2">
+            <div
+              key={`${exam.id}-${index}`}
+              className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-0.5 rounded-xl bg-muted/60 px-3 py-2"
+              onClick={() => onSelectExam?.(exam)}
+              role={onSelectExam ? 'button' : undefined}
+              tabIndex={onSelectExam ? 0 : undefined}
+              onKeyDown={(event) => {
+                if (!onSelectExam) return
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onSelectExam(exam)
+                }
+              }}
+            >
               <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{exam.courseName}</span>
               {exam.time && <span className="text-[11px] text-muted-foreground">{exam.time}</span>}
               {exam.room && <span className="text-[11px] text-muted-foreground">@{exam.room}</span>}
               {exam.seat && <span className="rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-600 dark:text-sky-400">{exam.seat} 座</span>}
+              {onSelectExam && <ChevronRight className="size-3 flex-shrink-0 text-muted-foreground/40" />}
             </div>
           ))}
         </div>
@@ -693,7 +787,13 @@ function ExamsSection({ overview }: { overview: CduOverviewData }): React.ReactE
 }
 
 /** 教务通知 */
-function NoticesSection({ overview }: { overview: CduOverviewData }): React.ReactElement {
+function NoticesSection({
+  overview,
+  onSelectNotice,
+}: {
+  overview: CduOverviewData
+  onSelectNotice?: (notice: CduOverviewData['notices'][number]) => void
+}): React.ReactElement {
   return (
     <SectionCard icon={<Bell className="size-4" />} title="教务通知">
       {overview.notices.length === 0 ? (
@@ -701,11 +801,25 @@ function NoticesSection({ overview }: { overview: CduOverviewData }): React.Reac
       ) : (
         <div className="space-y-1">
           {overview.notices.slice(0, 10).map((notice, index) => (
-            <div key={`${notice.id}-${index}`} className="flex items-center gap-3 rounded-xl px-2 py-1.5 hover:bg-muted/60">
+            <div
+              key={`${notice.id}-${index}`}
+              className="flex cursor-pointer items-center gap-3 rounded-xl px-2 py-1.5 hover:bg-muted/60"
+              onClick={() => onSelectNotice?.(notice)}
+              role={onSelectNotice ? 'button' : undefined}
+              tabIndex={onSelectNotice ? 0 : undefined}
+              onKeyDown={(event) => {
+                if (!onSelectNotice) return
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onSelectNotice(notice)
+                }
+              }}
+            >
               <span className="min-w-0 flex-1 truncate text-xs text-foreground">{notice.title}</span>
               {notice.releaseDate && (
                 <span className="flex-shrink-0 text-[11px] text-muted-foreground">{notice.releaseDate.slice(0, 10)}</span>
               )}
+              {onSelectNotice && <ChevronRight className="size-3 flex-shrink-0 text-muted-foreground/40" />}
             </div>
           ))}
         </div>
@@ -721,6 +835,63 @@ function CduTimetableOnly(): React.ReactElement | null {
   return <TimetableSection overview={overview} />
 }
 
+/** 子服务分组：显式呈现“统一身份认证 → 子服务 → 组件”的层级 */
+function CduServiceSection({
+  serviceId,
+  visibleCount,
+  totalCount,
+  onCustomize,
+  children,
+}: {
+  serviceId: 'jw' | 'isp'
+  visibleCount: number
+  totalCount: number
+  onCustomize: () => void
+  children: React.ReactNode
+}): React.ReactElement {
+  const meta = CDU_DASHBOARD_SERVICES.find((item) => item.id === serviceId)!
+  const Icon = meta.icon
+  return (
+    <section className="overflow-hidden rounded-2xl border border-border/60 bg-card/70 shadow-sm">
+      <header className="flex flex-wrap items-center gap-2.5 border-b border-border/60 bg-muted/20 px-5 py-3">
+        <span className="flex size-8 items-center justify-center rounded-xl bg-sky-600/10 text-sky-600 dark:text-sky-400">
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-foreground">{meta.title}</h2>
+            <span className="rounded-full bg-sky-600/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-600 dark:text-sky-400">
+              子服务
+            </span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            {meta.subtitle} · {meta.hint}
+          </p>
+        </div>
+        <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+          {visibleCount}/{totalCount} 个组件
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 px-2 text-[11px] text-muted-foreground"
+          onClick={onCustomize}
+        >
+          <SlidersHorizontal className="size-3" />
+          管理
+        </Button>
+      </header>
+      <div className="space-y-4 p-4">{children}</div>
+    </section>
+  )
+}
+
+/** 组件在双列网格中的跨列规则：课表与通知横跨整行。 */
+function componentGridClass(id: CduDashboardComponentId): string {
+  return id === 'jw.timetable' || id === 'jw.notices' || id === 'isp.notices' ? 'lg:col-span-2' : ''
+}
+
 /** CDU 专区主视图 */
 export function CduZoneView(): React.ReactElement {
   const [account, setAccount] = useAtom(cduAccountAtom)
@@ -728,9 +899,30 @@ export function CduZoneView(): React.ReactElement {
   const [overview, setOverview] = useAtom(cduOverviewAtom)
   const [loading, setLoading] = useAtom(cduOverviewLoadingAtom)
   const [error, setError] = useAtom(cduOverviewErrorAtom)
-  const [, setIspRefresh] = useAtom(cduIspRefreshAtom)
-  // 数据源 Tab：教务系统（szjw）/ ISP 服务平台（xsswzx）
-  const [zoneTab, setZoneTab] = React.useState<CduZoneTab>('jw')
+  const [ispData, setIspData] = useAtom(cduIspDataAtom)
+  const [ispError, setIspError] = useAtom(cduIspErrorAtom)
+  const [ispLoading, setIspLoading] = useAtom(cduIspLoadingAtom)
+  const [prefsMap, setPrefsMap] = useAtom(cduDashboardPrefsAtom)
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
+  const [detail, setDetail] = React.useState<CduDetailState | null>(null)
+
+  const prefsKey = account.studentId || '__default__'
+  const prefs = React.useMemo(
+    () => normalizeCduDashboardPrefs(prefsMap[prefsKey] ?? CDU_DEFAULT_PREFS),
+    [prefsMap, prefsKey],
+  )
+  const updatePrefs = React.useCallback(
+    (next: CduDashboardPrefs): void => {
+      setPrefsMap((previous) => ({ ...previous, [prefsKey]: next }))
+    },
+    [prefsKey, setPrefsMap],
+  )
+
+  const isLoggedIn = account.status === 'active' || account.status === 'expired'
+  const jwComponents = visibleCduDashboardComponents(prefs, 'jw')
+  const ispComponents = visibleCduDashboardComponents(prefs, 'isp')
+  // 全部 ISP 组件被隐藏时不访问 ISP 站点；重新启用后由 enabled 变化触发拉取。
+  const isp = useCduIspData(account.status === 'active' && ispComponents.length > 0)
 
   // 初始化：拉取账户快照并订阅状态推送（主进程保活心跳/静默恢复都会经此同步）
   React.useEffect(() => {
@@ -760,22 +952,25 @@ export function CduZoneView(): React.ReactElement {
     }
   }, [setLoading, setError, setOverview])
 
-  // 登录成功后自动拉取教务数据
+  // 登录成功后自动拉取教务数据；全部教务组件隐藏时不请求
   React.useEffect(() => {
-    if (account.status === 'active' && !overview) {
+    if (account.status === 'active' && jwComponents.length > 0 && !overview) {
       void fetchOverview()
     }
-  }, [account.status, overview, fetchOverview])
+  }, [account.status, jwComponents.length, overview, fetchOverview])
 
   const handleLogout = async (): Promise<void> => {
     await window.electronAPI.cduZone.logout().catch(() => undefined)
     // 保留 overview atom：登出不清缓存，未登录态用离线快照继续展示课表
     setSelectedWeek(null)
     setError(null)
+    setIspData(null)
+    setIspError(null)
+    setIspLoading(false)
+    setSettingsOpen(false)
+    setDetail(null)
     setAccount({ studentId: '', studentName: '', status: 'disconnected' })
   }
-
-  const isLoggedIn = account.status === 'active' || account.status === 'expired'
 
   // 未登录且无内存数据时，读取本地离线快照（登出保留的镜像；零网络请求）
   React.useEffect(() => {
@@ -791,6 +986,157 @@ export function CduZoneView(): React.ReactElement {
       cancelled = true
     }
   }, [isLoggedIn, overview, setOverview])
+
+  const refreshAll = (): void => {
+    if (jwComponents.length > 0) void fetchOverview(true)
+    if (ispComponents.length > 0) void isp.refresh(true)
+  }
+
+  // 在已登录的 CDU 会话里打开学校页面（通知原文、业务详情）
+  const openPage = React.useCallback((url: string): void => {
+    void window.electronAPI.cduZone.openPage(url).then((result) => {
+      if (!result.success) console.warn(`[CDU] 打开学校页面失败：${result.error ?? '未知错误'}`)
+    }).catch((err) => {
+      console.warn('[CDU] 打开学校页面失败：', err)
+    })
+  }, [])
+
+  const openCourseDetail = (course: TimetableCourse): void => {
+    setDetail({
+      title: course.courseName,
+      subtitle: course.courseCode ? `课程代码 ${course.courseCode}` : '课程详情',
+      fields: [
+        { label: '教师', value: course.teacher },
+        { label: '教室', value: course.classroom },
+        { label: '校区', value: course.campus },
+        { label: '周次', value: course.weeks },
+        {
+          label: '时间',
+          value: course.weekday >= 1 && course.weekday <= 7
+            ? `${WEEKDAY_LABELS[course.weekday]}${course.period ? ` 第 ${course.period} 节` : ''}`
+            : undefined,
+        },
+        { label: '学分', value: course.credits },
+        { label: '课程类别', value: course.courseCategory },
+        { label: '考试形式', value: course.examType },
+        { label: '教学班', value: course.teachingClass },
+        { label: '人数', value: course.classSize },
+      ],
+      actionLabel: '打开教务系统',
+      actionUrl: CDU_JW_HOME,
+    })
+  }
+
+  const openGradeDetail = (grade: CduOverviewData['grades'][number]): void => {
+    setDetail({
+      title: grade.courseName,
+      subtitle: grade.semester,
+      fields: [
+        { label: '成绩', value: grade.totalScore },
+        { label: '学分', value: grade.credit },
+        { label: '绩点', value: grade.gpaPoint },
+        { label: '获得学分', value: grade.earnedCredit },
+        { label: '课程类别', value: grade.courseCategory },
+        { label: '考试类型', value: grade.examType },
+        { label: '课程代码', value: grade.courseCode },
+      ],
+      actionLabel: '打开教务系统',
+      actionUrl: CDU_JW_HOME,
+    })
+  }
+
+  const openExamDetail = (exam: CduOverviewData['exams'][number]): void => {
+    setDetail({
+      title: exam.courseName,
+      subtitle: exam.examType ?? '考试安排',
+      fields: [
+        { label: '考试时间', value: exam.time },
+        { label: '考场', value: exam.room },
+        { label: '座位', value: exam.seat },
+        { label: '考试类型', value: exam.examType },
+        { label: '考试形式', value: exam.examForm },
+      ],
+      actionLabel: '打开教务系统',
+      actionUrl: CDU_JW_HOME,
+    })
+  }
+
+  const openJwNotice = (notice: CduOverviewData['notices'][number]): void => {
+    if (notice.url) {
+      openPage(notice.url)
+      return
+    }
+    setDetail({
+      title: notice.title,
+      subtitle: notice.releaseDate ? `发布日期 ${notice.releaseDate}` : '教务通知',
+      fields: [{ label: '来源', value: '数智教务' }],
+      actionLabel: '打开教务系统',
+      actionUrl: CDU_JW_HOME,
+    })
+  }
+
+  const openIspNotice = (notice: CduIspData['notices'][number]): void => {
+    if (notice.url) {
+      openPage(notice.url)
+      return
+    }
+    setDetail({
+      title: notice.title,
+      subtitle: notice.publishDate,
+      fields: [
+        { label: '来源', value: notice.source },
+        { label: '状态', value: notice.read ? '已读' : '未读' },
+      ],
+      actionLabel: '打开 ISP 通知页',
+      actionUrl: CDU_ISP_HOME,
+    })
+  }
+
+  const openBookDetail = (book: CduIspData['books'][number]): void => {
+    setDetail({
+      title: book.title,
+      subtitle: book.location,
+      fields: [
+        { label: '借阅日期', value: book.borrowDate },
+        { label: '到期日期', value: book.dueDate },
+        { label: '剩余天数', value: book.remainingDays },
+      ],
+      actionLabel: '打开图书借阅页',
+      actionUrl: CDU_ISP_BOOKS,
+    })
+  }
+
+  const renderJwComponent = (id: CduDashboardComponentId): React.ReactNode => {
+    if (!overview) return null
+    switch (id) {
+      case 'jw.timetable':
+        return <TimetableSection overview={overview} onSelectCourse={openCourseDetail} />
+      case 'jw.grades':
+        return <GradesSection overview={overview} onSelectGrade={openGradeDetail} />
+      case 'jw.exams':
+        return <ExamsSection overview={overview} onSelectExam={openExamDetail} />
+      case 'jw.notices':
+        return <NoticesSection overview={overview} onSelectNotice={openJwNotice} />
+      default:
+        return null
+    }
+  }
+
+  const renderIspComponent = (id: CduDashboardComponentId): React.ReactNode => {
+    if (!ispData) return null
+    switch (id) {
+      case 'isp.score':
+        return <IspScoreSection data={ispData.score} />
+      case 'isp.books':
+        return <IspBooksSection books={ispData.books} onSelectBook={openBookDetail} />
+      case 'isp.family':
+        return <IspFamilySection data={ispData.family} />
+      case 'isp.notices':
+        return <IspNoticesSection notices={ispData.notices} onSelectNotice={openIspNotice} />
+      default:
+        return null
+    }
+  }
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-content-area">
@@ -808,7 +1154,9 @@ export function CduZoneView(): React.ReactElement {
               </span>
               <div>
                 <h1 className="text-lg font-bold tracking-tight">CDU 专区</h1>
-                <p className="text-xs text-white/80">成都大学数智教务 · 统一身份认证接入 · 自爱 自修 自尊 自强</p>
+                <p className="text-xs text-white/80">
+                  统一身份认证 · 数智教务 / ISP 学生综合服务平台 · 自爱 自修 自尊 自强
+                </p>
               </div>
             </div>
           </div>
@@ -830,117 +1178,165 @@ export function CduZoneView(): React.ReactElement {
                 </div>
               </div>
             ) : (
-            <div className="flex flex-col items-stretch gap-6 py-6 lg:flex-row lg:items-center lg:justify-center">
-              <div className="max-w-md space-y-4">
-                <h2 className="text-xl font-bold text-foreground">你的成大“赛博教务助手”</h2>
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  静默接入成都大学统一身份认证与数智教务，课表、成绩、考试安排、教务通知
-                  一站直达。数据全部只读查询，凭据仅保存在本机沙盒。
-                </p>
-                <ul className="space-y-2 text-xs text-muted-foreground">
-                  <li className="flex items-center gap-2">
-                    <span className="size-1.5 rounded-full bg-sky-500" />
-                    学号密码一键登录，后台静默完成 CAS 认证，界面零跳转
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="size-1.5 rounded-full bg-sky-500" />
-                    课表 / 成绩 / 考试 / 通知四域聚合，每 10 分钟静默保活
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="size-1.5 rounded-full bg-sky-500" />
-                    严格学生端只读：会话失效如实提示，绝不假装在线
-                  </li>
-                </ul>
+              <div className="flex flex-col items-stretch gap-6 py-6 lg:flex-row lg:items-center lg:justify-center">
+                <div className="max-w-md space-y-4">
+                  <h2 className="text-xl font-bold text-foreground">你的成大“赛博教务助手”</h2>
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    静默接入成都大学统一身份认证、数智教务与 ISP 学生综合服务平台，课表、成绩、考试、通知、
+                    素质分、图书借阅一站直达。数据全部只读查询，凭据仅保存在本机沙盒。
+                  </p>
+                  <ul className="space-y-2 text-xs text-muted-foreground">
+                    <li className="flex items-center gap-2">
+                      <span className="size-1.5 rounded-full bg-sky-500" />
+                      学号密码一键登录，后台静默完成 CAS 认证，界面零跳转
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="size-1.5 rounded-full bg-sky-500" />
+                      按统一身份认证的子服务组织数据，可自定义显示哪些组件
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="size-1.5 rounded-full bg-sky-500" />
+                      严格学生端只读：会话失效如实提示，绝不假装在线
+                    </li>
+                  </ul>
+                </div>
+                <LoginCard />
               </div>
-              <LoginCard />
-            </div>
             )
           ) : (
-            /* 已登录态：账户条 + 数据源 Tab + 数据看板 */
+            /* 已登录态：账户条 + 统一身份认证子服务 + 可自定义组件 */
             <>
               <ProfileBar
                 account={account}
-                refreshing={loading}
-                onRefresh={() => (zoneTab === 'isp' ? setIspRefresh((tick) => tick + 1) : void fetchOverview(true))}
+                refreshing={loading || isp.loading}
+                onRefresh={refreshAll}
                 onLogout={() => void handleLogout()}
+                onCustomize={() => setSettingsOpen(true)}
               />
 
-              {/* 数据源切换：教务系统 / ISP 服务平台 */}
-              <div className="flex gap-2">
-                {(
-                  [
-                    { key: 'jw' as const, label: '教务系统', hint: '课表 · 成绩 · 考试 · 通知' },
-                    { key: 'isp' as const, label: 'ISP 服务平台', hint: '素质分 · 图书 · 困难认定' },
-                  ]
-                ).map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setZoneTab(tab.key)}
-                    className={
-                      'flex-1 rounded-xl px-4 py-2.5 text-left transition-colors ' +
-                      (zoneTab === tab.key
-                        ? 'bg-sky-600 text-white shadow-sm'
-                        : 'bg-card text-muted-foreground shadow-sm hover:text-foreground')
-                    }
-                  >
-                    <div className="text-[13px] font-semibold">{tab.label}</div>
-                    <div className={'text-[11px] ' + (zoneTab === tab.key ? 'text-white/75' : 'text-muted-foreground/70')}>
-                      {tab.hint}
-                    </div>
-                  </button>
-                ))}
-              </div>
+              <CduDashboardSettings
+                open={settingsOpen}
+                onOpenChange={setSettingsOpen}
+                prefs={prefs}
+                onChange={updatePrefs}
+              />
 
-              {zoneTab === 'isp' ? (
-                /* ISP 服务平台板块：素质分 / 图书借阅 / 困难认定 / ISP 通知 */
-                <CduIspSections />
-              ) : (
-                <>
               {account.status === 'expired' && (
                 <div className="flex items-center gap-2 rounded-xl bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
                   <AlertCircle className="size-4 flex-shrink-0" />
                   教务会话已过期，请退出后重新登录（不会静默伪装在线）
                 </div>
               )}
-              {error && (
-                <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-400">
-                  <AlertCircle className="size-4 flex-shrink-0" />
-                  {error}
+
+              {jwComponents.length === 0 && ispComponents.length === 0 ? (
+                <div className="rounded-2xl bg-card px-6 py-10 text-center shadow-sm">
+                  <p className="text-sm font-medium text-foreground">当前隐藏了所有组件</p>
+                  <p className="mt-1 text-xs text-muted-foreground">打开“自定义”选择要展示的教务或 ISP 组件。</p>
+                  <Button className="mt-4 gap-1.5" onClick={() => setSettingsOpen(true)}>
+                    <SlidersHorizontal className="size-4" />
+                    自定义展示
+                  </Button>
                 </div>
-              )}
-              {loading && !overview && (
-                <div className="flex items-center justify-center gap-2 rounded-2xl bg-card py-10 text-sm text-muted-foreground shadow-sm">
-                  <Loader2 className="size-4 animate-spin" />
-                  正在拉取教务数据…
-                </div>
-              )}
-              {overview && (
+              ) : (
                 <>
-                  {overview.partialErrors.length > 0 && (
-                    <div className="rounded-xl bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-700 dark:text-amber-400">
-                      部分数据加载失败：{overview.partialErrors.join('；')}
-                    </div>
+                  {jwComponents.length > 0 && (
+                    <CduServiceSection
+                      serviceId="jw"
+                      visibleCount={jwComponents.length}
+                      totalCount={prefs.order.jw.length}
+                      onCustomize={() => setSettingsOpen(true)}
+                    >
+                      {error && (
+                        <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-400">
+                          <AlertCircle className="size-4 flex-shrink-0" />
+                          {error}
+                        </div>
+                      )}
+                      {loading && !overview && (
+                        <div className="flex items-center justify-center gap-2 rounded-2xl bg-card py-10 text-sm text-muted-foreground shadow-sm">
+                          <Loader2 className="size-4 animate-spin" />
+                          正在拉取教务数据…
+                        </div>
+                      )}
+                      {!loading && !error && !overview && <EmptyHint text="暂无教务数据" />}
+                      {overview && (
+                        <>
+                          {overview.partialErrors.length > 0 && (
+                            <div className="rounded-xl bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-700 dark:text-amber-400">
+                              部分数据加载失败：{overview.partialErrors.join('；')}
+                            </div>
+                          )}
+                          <div className="grid gap-4 lg:grid-cols-2">
+                            {jwComponents.map((id) => (
+                              <div key={id} className={componentGridClass(id)}>
+                                {renderJwComponent(id)}
+                              </div>
+                            ))}
+                          </div>
+                          <p className="pb-2 text-center text-[11px] text-muted-foreground/60">
+                            数据更新于 {new Date(overview.fetchedAt).toLocaleTimeString('zh-CN')} · 仅本机只读查询，不向任何第三方服务器中转
+                          </p>
+                        </>
+                      )}
+                    </CduServiceSection>
                   )}
-                  <TimetableSection overview={overview} />
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <GradesSection overview={overview} />
-                    <div className="space-y-4">
-                      <ExamsSection overview={overview} />
-                      <NoticesSection overview={overview} />
-                    </div>
-                  </div>
-                  <p className="pb-2 text-center text-[11px] text-muted-foreground/60">
-                    数据更新于 {new Date(overview.fetchedAt).toLocaleTimeString('zh-CN')} · 仅本机只读查询，不向任何第三方服务器中转
-                  </p>
-                </>
-              )}
+
+                  {ispComponents.length > 0 && (
+                    <CduServiceSection
+                      serviceId="isp"
+                      visibleCount={ispComponents.length}
+                      totalCount={prefs.order.isp.length}
+                      onCustomize={() => setSettingsOpen(true)}
+                    >
+                      <CduIspStatus
+                        loading={isp.loading}
+                        error={isp.error}
+                        data={isp.data}
+                        onRetry={() => void isp.refresh(true)}
+                      />
+                      {!isp.loading && !isp.error && !isp.data && <EmptyHint text="暂无 ISP 数据" />}
+                      {isp.data && (
+                        <>
+                          <div className="grid gap-4 lg:grid-cols-2">
+                            {ispComponents.map((id) => (
+                              <div key={id} className={componentGridClass(id)}>
+                                {renderIspComponent(id)}
+                              </div>
+                            ))}
+                          </div>
+                          <p className="pb-2 text-center text-[11px] text-muted-foreground/60">
+                            数据更新于 {new Date(isp.data.fetchedAt).toLocaleTimeString('zh-CN')} · 服务端渲染页面只读解析
+                          </p>
+                        </>
+                      )}
+                    </CduServiceSection>
+                  )}
                 </>
               )}
             </>
           )}
         </div>
       </div>
+
+      <CduDetailDialog
+        open={detail !== null}
+        onOpenChange={(open) => {
+          if (!open) setDetail(null)
+        }}
+        title={detail?.title ?? ''}
+        subtitle={detail?.subtitle}
+        fields={detail?.fields ?? []}
+        actionLabel={detail?.actionLabel}
+        onAction={
+          detail?.actionUrl
+            ? () => {
+                const url = detail.actionUrl
+                if (url) openPage(url)
+                setDetail(null)
+              }
+            : undefined
+        }
+      />
     </div>
   )
 }

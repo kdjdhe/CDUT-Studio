@@ -142,6 +142,11 @@ interface RawNoticeRow {
   title?: string
   releasedate?: string
   releaseDate?: string
+  /** 部分版本会直接返回详情地址，字段名不固定，统一兜底 */
+  url?: string
+  link?: string
+  href?: string
+  wzlj?: string
 }
 
 /** 原始节次行 */
@@ -447,11 +452,19 @@ export class CduJwClient {
   /** 教务通知（响应无统一 ret 壳，直接是 { list }） */
   public async queryNotices(): Promise<CduNoticeItem[]> {
     const payload = await this.requestJson<{ list?: RawNoticeRow[] }>('/admin/system/showHomeView/getNoticeSysjlist')
-    return (payload.list ?? []).map((row) => ({
-      id: row.id ?? '',
-      title: row.title ?? '',
-      releaseDate: row.releaseDate ?? row.releasedate,
-    }))
+    return (payload.list ?? []).map((row) => {
+      const rawUrl = row.url ?? row.link ?? row.href ?? row.wzlj
+      // 只接受绝对地址或以 / 开头的站内路径；裸 id 不猜详情路由。
+      const url = rawUrl && (/^(?:https?:)?\/\//i.test(rawUrl) || rawUrl.startsWith('/'))
+        ? new URL(rawUrl, `${CDU_JW_BASE}/admin/`).toString()
+        : undefined
+      return {
+        id: row.id ?? '',
+        title: row.title ?? '',
+        releaseDate: row.releaseDate ?? row.releasedate,
+        url,
+      }
+    })
   }
 
   /**

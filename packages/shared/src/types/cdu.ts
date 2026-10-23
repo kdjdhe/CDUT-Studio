@@ -132,6 +132,8 @@ export interface CduNoticeItem {
   id: string
   title: string
   releaseDate?: string
+  /** 通知详情地址（接口若返回；缺省时由专区打开教务首页） */
+  url?: string
 }
 
 /** 单个节次的上下课时间（来自 getZclistByXnxq 节次时间设置） */
@@ -183,6 +185,8 @@ export const CDU_ZONE_IPC_CHANNELS = {
   FETCH_OVERVIEW_OFFLINE: 'cdu-zone:fetch-overview-offline',
   /** 拉取 ISP 学生综合服务平台数据聚合（通知/素质分/图书/困难认定） */
   FETCH_ISP: 'cdu-zone:fetch-isp',
+  /** 在 CDU 已登录会话中打开学校页面（通知原文/业务详情，只读窗口） */
+  OPEN_PAGE: 'cdu-zone:open-page',
   /** MFA：取当前二维码快照（渲染进程打开面板/刷新时拉取） */
   MFA_QR_SNAPSHOT: 'cdu-zone:mfa-qr-snapshot',
   /** MFA：主进程推送二维码阶段/图片更新（长轮询循环期间） */
@@ -201,6 +205,8 @@ export interface CduIspNotice {
   publishDate?: string
   source?: string
   read?: boolean
+  /** 通知详情地址（解析自通知行内链接；缺省时打开 ISP 首页） */
+  url?: string
 }
 
 /** 素质分单条加分/减分明细 */

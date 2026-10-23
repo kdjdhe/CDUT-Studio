@@ -1968,6 +1968,8 @@ export interface ElectronAPI {
     fetchOverviewOffline: () => Promise<CduOverviewData | null>
     /** 拉取 ISP 学生综合服务平台数据聚合（通知/素质分/图书/困难认定）；force=true 绕过本地缓存 */
     fetchIsp: (force?: boolean) => Promise<CduIspData>
+    /** 在 CDU 已登录会话中打开学校页面（通知原文/业务详情）；仅允许 cdu.edu.cn */
+    openPage: (url: string) => Promise<{ success: boolean; error?: string }>
     /** MFA 二次验证：拉取当前二维码快照 */
     getMfaQrSnapshot: () => Promise<CduMfaQrPayload>
     /** MFA 二次验证：取消扫码登录 */
@@ -4474,6 +4476,8 @@ const electronAPI: ElectronAPI = {
     fetchOverviewOffline: () =>
       ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.FETCH_OVERVIEW_OFFLINE) as Promise<CduOverviewData | null>,
     fetchIsp: (force?: boolean) => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.FETCH_ISP, force === true),
+    openPage: (url: string) =>
+      ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.OPEN_PAGE, url) as Promise<{ success: boolean; error?: string }>,
     /** MFA：拉取当前二维码快照（打开面板时） */
     getMfaQrSnapshot: () => ipcRenderer.invoke(CDU_ZONE_IPC_CHANNELS.MFA_QR_SNAPSHOT) as Promise<CduMfaQrPayload>,
     /** MFA：取消扫码登录 */
