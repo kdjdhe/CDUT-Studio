@@ -197,6 +197,66 @@ export const CDU_ZONE_IPC_CHANNELS = {
   STATUS_CHANGED: 'cdu-zone:status-changed',
 } as const
 
+// ===== 校园网 VPN（学校 WireGuard，用户态内核 wireproxy）=====
+
+/**
+ * 隧道进程状态。
+ *
+ * 与普通代理不同，学校同一份 WG 配置同一时间只允许一台设备在线，
+ * 因此「连接」是显式动作而不是常驻状态：启动不自动连接，退出时必断开。
+ */
+export type CduVpnStatus = 'not-configured' | 'starting' | 'connected' | 'stopped' | 'error'
+
+/**
+ * 登录后探测到的网络环境。
+ *
+ * 判定依据见主进程 cdu-net-probe.ts：校外访问业务系统时网关返回 HTTP 200 +
+ * 伪装成「页面正在修复中」的页面，因此只能读正文，不能看状态码。
+ */
+export type CduNetState = 'ok' | 'blocked' | 'need-login' | 'unreachable' | 'unknown'
+
+/** 可安全下发展示的配置摘要；私钥与预共享密钥只留在主进程 */
+export interface CduVpnConfigSummary {
+  /** 对端地址，形如 180.84.28.2:56789 */
+  endpoint: string
+  /** 隧道内本地地址，形如 10.6.1.228/32 */
+  address: string
+  /** 客户端公钥（由私钥派生，可展示） */
+  publicKey: string
+  /** 路由网段数量，用于向用户说明这是分流隧道而非全局代理 */
+  allowedIpCount: number
+  /** 导入时间（ISO 8601） */
+  importedAt: string
+}
+
+export interface CduVpnState {
+  status: CduVpnStatus
+  config: CduVpnConfigSummary | null
+  /** 本地 SOCKS5 端口；仅在已连接时有值 */
+  socksPort?: number
+  /** 最近一次错误（已脱敏，绝不含密钥） */
+  error?: string
+  /** 网络环境探测结果 */
+  netState: CduNetState
+  /** 上次探测时间（ISO 8601） */
+  netCheckedAt?: string
+  /** 隧道是否已挂到 persist:cdu-zone 分区 */
+  appliedToSession: boolean
+}
+
+export const CDU_VPN_IPC_CHANNELS = {
+  GET_STATE: 'cdu-vpn:get-state',
+  /** 打开文件选择器导入 .conf / .zip（解析与落盘全在主进程） */
+  IMPORT_CONFIG: 'cdu-vpn:import-config',
+  CONNECT: 'cdu-vpn:connect',
+  DISCONNECT: 'cdu-vpn:disconnect',
+  REMOVE_CONFIG: 'cdu-vpn:remove-config',
+  /** 登录后探测当前是否处于校园内网可达状态 */
+  PROBE_NETWORK: 'cdu-vpn:probe-network',
+  /** 主进程推送隧道状态变化 */
+  STATUS_CHANGED: 'cdu-vpn:status-changed',
+} as const
+
 // ===== ISP 学生综合服务平台（xsswzx.cdu.edu.cn，服务端渲染 ASP）=====
 
 /** ISP 首页通知 */

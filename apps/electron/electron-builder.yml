@@ -127,6 +127,9 @@ mac:
   extraResources:
     - from: resources/bin/profer
       to: bin/profer
+    # CDU 校园网 VPN 内核（wireproxy，ISC 许可）；由 scripts/fetch-wireproxy.mjs 拉取。
+    - from: resources/bin/wireproxy
+      to: bin/wireproxy
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: resources/entitlements.mac.plist
@@ -134,6 +137,8 @@ mac:
   # 随包 CLI 由当前 macOS runner 构建，并在将来启用签名时纳入签名范围。
   binaries:
     - resources/bin/profer
+    # wireproxy 必须一并签名，否则 hardened runtime 下子进程会被系统拦截。
+    - resources/bin/wireproxy
   extendInfo:
     NSMicrophoneUsageDescription: "CDUT Studio 需要访问麦克风，用于将你的语音实时转写为文本。"
   target:
@@ -164,6 +169,8 @@ linux:
   extraResources:
     - from: resources/bin/profer
       to: bin/profer
+    - from: resources/bin/wireproxy
+      to: bin/wireproxy
 
 # ============================================
 # Windows 配置
@@ -174,6 +181,8 @@ win:
   extraResources:
     - from: resources/bin/profer.exe
       to: bin/profer.exe
+    - from: resources/bin/wireproxy.exe
+      to: bin/wireproxy.exe
     - from: resources/bin/git
       to: bin/git
       filter:

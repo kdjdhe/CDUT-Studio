@@ -101,7 +101,7 @@ import {
   type CsLabReviewRequest,
   type CsLabReviewResult,
 } from '@profer/shared'
-import { CDU_ZONE_IPC_CHANNELS, type CduAccountProfile, type CduLoginInput, type CduLoginResult, type CduMfaQrPayload, type CduSavedAccountSummary, type CduOverviewData, type CduIspData } from '@profer/shared'
+import { CDU_ZONE_IPC_CHANNELS, CDU_VPN_IPC_CHANNELS, type CduAccountProfile, type CduLoginInput, type CduLoginResult, type CduMfaQrPayload, type CduSavedAccountSummary, type CduOverviewData, type CduIspData, type CduVpnState } from '@profer/shared'
 import type {
   RuntimeStatus,
   GitRepoStatus,
@@ -1977,6 +1977,17 @@ export interface ElectronAPI {
     /** MFA 二次验证：订阅二维码阶段/图片更新推送 */
     onMfaQrUpdated: (callback: (payload: CduMfaQrPayload) => void) => () => void
     onStatusChanged: (callback: (profile: CduAccountProfile) => void) => () => void
+  }
+
+  // ===== CDU 校园网 VPN（WireGuard → 本地 SOCKS5）=====
+  cduVpn: {
+    getState: () => Promise<CduVpnState>
+    importConfig: () => Promise<{ success: boolean; error?: string; state: CduVpnState }>
+    connect: () => Promise<CduVpnState>
+    disconnect: () => Promise<CduVpnState>
+    removeConfig: () => Promise<CduVpnState>
+    probeNetwork: () => Promise<CduVpnState>
+    onStatusChanged: (callback: (state: CduVpnState) => void) => () => void
   }
 
   // ===== AI 速课堂（学习资料） =====
@@ -4492,6 +4503,29 @@ const electronAPI: ElectronAPI = {
       const handler = (_: unknown, profile: CduAccountProfile) => callback(profile)
       ipcRenderer.on(CDU_ZONE_IPC_CHANNELS.STATUS_CHANGED, handler)
       return () => ipcRenderer.removeListener(CDU_ZONE_IPC_CHANNELS.STATUS_CHANGED, handler)
+    },
+  },
+
+  // ===== CDU 校园网 VPN（WireGuard → 本地 SOCKS5）=====
+  // 私钥始终留在主进程：渲染层只能拿到 CduVpnConfigSummary（不含任何密钥）。
+  cduVpn: {
+    getState: () => ipcRenderer.invoke(CDU_VPN_IPC_CHANNELS.GET_STATE) as Promise<CduVpnState>,
+    /** 打开文件选择器导入 .conf / .zip；解析与校验全部在主进程完成 */
+    importConfig: () =>
+      ipcRenderer.invoke(CDU_VPN_IPC_CHANNELS.IMPORT_CONFIG) as Promise<{
+        success: boolean
+        error?: string
+        state: CduVpnState
+      }>,
+    connect: () => ipcRenderer.invoke(CDU_VPN_IPC_CHANNELS.CONNECT) as Promise<CduVpnState>,
+    disconnect: () => ipcRenderer.invoke(CDU_VPN_IPC_CHANNELS.DISCONNECT) as Promise<CduVpnState>,
+    removeConfig: () => ipcRenderer.invoke(CDU_VPN_IPC_CHANNELS.REMOVE_CONFIG) as Promise<CduVpnState>,
+    /** 登录后探测当前是否具备校园网访问权限 */
+    probeNetwork: () => ipcRenderer.invoke(CDU_VPN_IPC_CHANNELS.PROBE_NETWORK) as Promise<CduVpnState>,
+    onStatusChanged: (callback: (state: CduVpnState) => void) => {
+      const handler = (_: unknown, state: CduVpnState) => callback(state)
+      ipcRenderer.on(CDU_VPN_IPC_CHANNELS.STATUS_CHANGED, handler)
+      return () => ipcRenderer.removeListener(CDU_VPN_IPC_CHANNELS.STATUS_CHANGED, handler)
     },
   },
 

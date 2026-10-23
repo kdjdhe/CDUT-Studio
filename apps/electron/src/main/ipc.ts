@@ -132,7 +132,7 @@ import type {
 } from '@profer/shared'
 import { KNOWLEDGE_IPC_CHANNELS } from '@profer/shared'
 import { CDUT_AI_CLASS_IPC_CHANNELS, CDUT_ZONE_IPC_CHANNELS, STUDY_IPC_CHANNELS, YANHU_EXPRESS_IPC_CHANNELS, type CdutDomainCacheName, type CdutDomainToolResult, type CdutGatekeeperDecision, type CdutLoginInput, type CdutMutationConfirmResult, type CdutToolInvokeParams, type StudyDocumentQueryInput, type StudyGraphGenerateInput, type StudyIngestDocumentsInput, type StudySearchKnowledgeInput, type StudySetDocumentsActiveInput, type StudyToggleDocumentActiveInput, type YanhuCdpInput, type YanhuCdpResult, type YanhuCloseRightInput, type YanhuCreateTabInput, type YanhuNavigateInput, type YanhuReorderTabsInput, type YanhuSyncThemeInput, type YanhuTabRefInput, type YanhuViewLayout } from '@profer/shared'
-import { CDU_ZONE_IPC_CHANNELS, type CduLoginInput } from '@profer/shared'
+import { CDU_ZONE_IPC_CHANNELS, CDU_VPN_IPC_CHANNELS, type CduLoginInput } from '@profer/shared'
 import type { UserProfile, AppSettings } from '../types'
 import { getRuntimeStatus, getGitRepoStatus, reinitializeRuntime } from './lib/runtime-init'
 import { browserController } from './lib/browser-controller'
@@ -165,6 +165,15 @@ import { cduJwClient } from './lib/cdu/cdu-jw-client'
 import { cduIspClient } from './lib/cdu/cdu-isp-client'
 import { getOfflineOverviewSnapshot } from './lib/cdu/cdu-cache'
 import { closeCduDetailWindows, openCduDetailWindow } from './lib/cdu/cdu-detail-window'
+import {
+  connectVpn,
+  disconnectVpn,
+  getVpnState,
+  importVpnConfig,
+  probeVpnNetwork,
+  removeVpnConfig,
+  setVpnStatusCallback,
+} from './lib/cdu/cdu-vpn-manager'
 import { resolveCdutGatekeeper } from './lib/cdut/cdut-gatekeeper'
 import { resolveCdutMutationConfirm } from './lib/cdut/cdut-mutation-guard'
 import {
@@ -6541,6 +6550,27 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.handle(CDU_ZONE_IPC_CHANNELS.MFA_CANCEL, () => {
     cduAuthManager.cancelMfa()
+  })
+
+  // ===== CDU 校园网 VPN（WireGuard → 本地 SOCKS5）=====
+  // 隧道只作用于 persist:cdu-zone 分区，因此导入/连接都不影响其它专区的网络。
+  ipcMain.handle(CDU_VPN_IPC_CHANNELS.GET_STATE, () => getVpnState())
+  ipcMain.handle(CDU_VPN_IPC_CHANNELS.IMPORT_CONFIG, async () => {
+    const result = await importVpnConfig()
+    return result
+  })
+  ipcMain.handle(CDU_VPN_IPC_CHANNELS.CONNECT, async () => await connectVpn())
+  ipcMain.handle(CDU_VPN_IPC_CHANNELS.DISCONNECT, async () => await disconnectVpn())
+  ipcMain.handle(CDU_VPN_IPC_CHANNELS.REMOVE_CONFIG, async () => await removeVpnConfig())
+  ipcMain.handle(CDU_VPN_IPC_CHANNELS.PROBE_NETWORK, async () => await probeVpnNetwork())
+
+  // 隧道状态变化广播（连接/断开/崩溃/探测结果）
+  setVpnStatusCallback((state) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(CDU_VPN_IPC_CHANNELS.STATUS_CHANGED, state)
+      }
+    }
   })
 
   // CDU 特区账户状态变更时向所有存活窗口广播

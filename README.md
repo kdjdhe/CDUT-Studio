@@ -267,6 +267,14 @@ flowchart TD
 
 本项目基于 **GNU General Public License v3.0 (GPL-3.0)** 开放源代码。详见 [LICENSE](LICENSE) 文件。
 
+### 第三方开源组件
+
+本项目随包分发若干第三方开源组件，其版权与许可要求见 **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**。
+
+特别说明：CDU 专区的校园网 VPN 使用 [wireproxy](https://github.com/pufferffish/wireproxy)（ISC License）以
+**用户态**方式提供 WireGuard 隧道——只在 `persist:cdu-zone` 分区内生效，不安装 TUN 驱动、不修改系统路由、
+不需要管理员权限。感谢上游作者 Tsz Fung Wong 及 wireguard-go / gVisor 等项目的开源工作。
+
 *免责声明：CDUT Studio 为成理学生开源 Agent 项目，非官方商业软件，旨在促进开源技术交流与学习效率提升。*
 
 ---
