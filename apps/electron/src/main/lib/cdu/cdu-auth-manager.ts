@@ -85,6 +85,8 @@ interface MfaRuntime {
   loginInput: CduLoginInput
   startedAt: number
   cancelled: boolean
+  /** 当前挂起中的 scan 长轮询；取消/重新登录时必须真正 abort */
+  pollController?: AbortController
 }
 
 /** 本地持久化结构（密码字段为密文） */
@@ -218,12 +220,17 @@ export class CduAuthManager {
     }
   }
 
+  /** 中止当前 MFA 流程（不广播状态），供取消/重新登录/登出复用 */
+  private abortActiveMfa(): void {
+    if (!this.mfa) return
+    this.mfa.cancelled = true
+    this.mfa.pollController?.abort()
+    this.mfa = null
+  }
+
   /** 用户取消扫码：终止主进程轮询并回到未登录态 */
   public cancelMfa(): void {
-    if (this.mfa) {
-      this.mfa.cancelled = true
-      this.mfa = null
-    }
+    this.abortActiveMfa()
     this.profile = { ...this.profile, status: 'disconnected' }
     this.emitStatus()
   }
@@ -272,15 +279,27 @@ export class CduAuthManager {
       return { success: false, error: '请输入学工号与密码' }
     }
 
+    // 上一次扫码可能还挂着长轮询或最终 POST；先真正中止，避免旧会话卡住新登录
+    this.abortActiveMfa()
+
+    const ses = session.fromPartition(CDU_SESSION_PARTITION)
+    // 每次主动登录都从干净 CAS 会话开始：清掉上一次失败留下的 Cookie / 挂起连接，
+    // 否则旧 MFA 会话可能让新的扫码确认投递到已废弃的请求上。
+    try {
+      await ses.clearStorageData({ storages: ['cookies'] })
+      await ses.closeAllConnections()
+    } catch {
+      // 清理失败不阻断登录，继续走正常 CAS 流程
+    }
+
     this.profile = { ...this.profile, studentId: username, status: 'connecting' }
     this.emitStatus()
 
     try {
-      const ses = session.fromPartition(CDU_SESSION_PARTITION)
-
       // 1. 打开教务 CAS 入口，跟随重定向落到统一身份认证登录页（service 自动绑定）
-      const pageResponse = await this.fetchWithTimeout(ses, CDU_CAS_ENTRY, { redirect: 'follow' })
+      const pageResponse = await this.fetchWithTimeout(ses, CDU_CAS_ENTRY, { redirect: 'follow' }, 'CAS 登录页')
       const pageHtml = await pageResponse.text()
+      console.log(`[cdu-auth] CAS 登录页 http=${pageResponse.status} html=${pageHtml.length}`)
       if (!pageHtml.includes('login-page-flowkey')) {
         throw new Error('统一身份认证登录页加载异常（未取得流程令牌），请稍后重试')
       }
@@ -307,9 +326,10 @@ export class CduAuthManager {
         redirect: 'follow',
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
+          referer: `${CDU_CAS_BASE}/login`,
         },
         body: form.toString(),
-      })
+      }, '密码提交')
       const landedHtml = await postResponse.text()
 
       // 2026-10-12 起学校强制 MFA：密码正确时 CAS 返回 200 二次认证页（同样内嵌
@@ -317,8 +337,10 @@ export class CduAuthManager {
       //   a) 重定向成功（Electron fetch 落地页无 flowkey）→ 走既有成功路径
       //   b) MFA 二次认证页（含 sso-second / corpwechatQr 标记）→ 进入扫码状态机
       //   c) 普通登录页（无 MFA 标记）→ 密码错误 / 触发验证码 / 账号锁定
-      const isMfaPage = landedHtml.includes('login-page-flowkey') && (landedHtml.includes('sso-second') || landedHtml.includes('corpwechatQr'))
-      if (landedHtml.includes('login-page-flowkey')) {
+      const hasFlowkey = landedHtml.includes('login-page-flowkey')
+      const isMfaPage = hasFlowkey && (landedHtml.includes('sso-second') || landedHtml.includes('corpwechatQr'))
+      console.log(`[cdu-auth] 密码提交 http=${postResponse.status} flowkey=${hasFlowkey} mfa=${isMfaPage} html=${landedHtml.length}`)
+      if (hasFlowkey) {
         if (isMfaPage) {
           const mfaExecution = parseCasCredentials(landedHtml).execution
           // 后台启动扫码状态机；立即返回 mfaRequired，由渲染进程打开二维码面板
@@ -337,6 +359,7 @@ export class CduAuthManager {
       // 4. 校验教务会话（角色 + 当前学年学期）——权威判定
       const roleJson = await this.fetchCurrentRole(ses)
       const data = roleJson?.data
+      console.log(`[cdu-auth] 教务角色探针 ret=${roleJson?.ret ?? 'null'} role=${data?.currentRoleId ?? 'none'}`)
       if (!data || data.currentRoleId !== 'xs') {
         throw new Error('教务会话建立失败：未取得学生角色，请确认使用学生账号')
       }
@@ -365,6 +388,7 @@ export class CduAuthManager {
       return { success: true, profile: this.getProfile() }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      console.error('[cdu-auth] 登录失败:', message)
       this.profile = { ...this.profile, status: 'disconnected' }
       this.emitStatus()
       return { success: false, error: message }
@@ -373,6 +397,7 @@ export class CduAuthManager {
 
   /** 退出登录：清空分区 Cookie、删除本地凭据与数据缓存并停掉心跳 */
   public async logout(): Promise<void> {
+    this.abortActiveMfa()
     this.stopKeepAlive()
     try {
       const ses = session.fromPartition(CDU_SESSION_PARTITION)
@@ -463,7 +488,7 @@ export class CduAuthManager {
       // 生成的二维码手机打开即 500 —— 故此处严格校验并记录原始响应体。
       const loginIdResp = await this.fetchWithTimeout(ses, `${CDU_CAS_BASE}/api/protected/qrlogin/loginid?${Date.now()}`, {
         headers: apiHeaders,
-      })
+      }, 'MFA loginid')
       const loginIdRaw = await loginIdResp.text()
       let loginIdJson: { code?: number; message?: string; data?: unknown }
       try {
@@ -478,29 +503,31 @@ export class CduAuthManager {
           `二次验证初始化失败：未取得有效二维码会话（code=${loginIdJson?.code ?? '?'} message=${loginIdJson?.message ?? loginIdRaw.slice(0, 80)}）。请稍后重试`,
         )
       }
-      this.mfa.loginId = loginId
+      if (this.mfa !== runtime) return
+      runtime.loginId = loginId
 
       // 2. 取二维码 PNG（原样转 dataURL 给渲染进程）
-      const qrResp = await this.fetchWithTimeout(ses, `${CDU_CAS_BASE}/api/public/qrlogin/qrgen/${encodeURIComponent(loginId)}/corpwechatQr`, { headers: apiHeaders })
+      const qrResp = await this.fetchWithTimeout(ses, `${CDU_CAS_BASE}/api/public/qrlogin/qrgen/${encodeURIComponent(loginId)}/corpwechatQr`, { headers: apiHeaders }, 'MFA 二维码')
       const qrBuffer = Buffer.from(await qrResp.arrayBuffer())
-      this.mfa.qrImage = `data:image/png;base64,${qrBuffer.toString('base64')}`
+      if (this.mfa !== runtime) return
+      runtime.qrImage = `data:image/png;base64,${qrBuffer.toString('base64')}`
+      console.log(`[cdu-mfa] qrgen http=${qrResp.status} bytes=${qrBuffer.length}`)
       // 诊断日志：解码二维码内容（redirect URL 带 t=票据），与浏览器抓包对照
       // QR 内容形如 https://id.cdu.edu.cn/api/public/redirect/{loginid}/corpwechatQr?t={32hex}
       logMfaQrContent(qrBuffer)
       this.emitMfaQr()
 
       // 3. 循环长轮询直至手机确认 / 用户取消 / 整体超时
-      const qrt = await this.pollMfaQr(ses, loginId, apiHeaders)
-      if (!qrt) return // 取消 / 超时（emit 已处理）
-      if (!this.mfa) return
+      const qrt = await this.pollMfaQr(ses, loginId, apiHeaders, runtime)
+      if (!qrt || this.mfa !== runtime) return // 取消 / 超时（emit 已处理）
 
       // 4. 提交 QRT 完成登录（# 必须转义为 %23，与浏览器行为一致）
-      this.mfa.phase = 'polling'
+      runtime.phase = 'polling'
       this.emitMfaQr()
       const form = new URLSearchParams({
         _eventId: 'submit',
         type: 'corpwechatQr',
-        execution: this.mfa.execution,
+        execution: runtime.execution,
         geolocation: '',
         username: qrt,
       })
@@ -509,24 +536,34 @@ export class CduAuthManager {
         redirect: 'follow',
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
-          ...apiHeaders,
+          // 不要加 Origin：Electron ses.fetch 会把带 Origin 的请求当成 CORS 请求，
+          // CAS 成功后 302 到 szjw 时目标页没有 Access-Control-Allow-Origin，
+          // 会直接 net::ERR_FAILED。referer + accept 已足够，且不触发 CORS。
+          referer: `${CDU_CAS_BASE}/login`,
+          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
         body: form.toString(),
-      })
+      }, 'MFA QRT 提交')
       const landedHtml = await finalResp.text()
-      if (landedHtml.includes('login-page-flowkey')) {
+      if (this.mfa !== runtime) return
+      const hasFlowkey = landedHtml.includes('login-page-flowkey')
+      console.log(`[cdu-mfa] QRT 提交 http=${finalResp.status} flowkey=${hasFlowkey} html=${landedHtml.length}`)
+      if (hasFlowkey) {
         throw new Error('扫码验证未生效（CAS 未签发票据），请重新登录')
       }
 
       // 5. 与密码直登路径共用收尾：校验教务会话 + 抓取画像 + 落盘
       runtime.phase = 'completed'
-      this.mfa = null
+      this.emitMfaQr()
       await this.finalizeLoginSuccess(input)
+      if (this.mfa === runtime) this.mfa = null
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const wasCancelled = runtime.cancelled
-      this.mfa = null
+      runtime.pollController?.abort()
+      if (this.mfa === runtime) this.mfa = null
       if (wasCancelled) return
+      console.error('[cdu-mfa] 流程失败:', message)
       this.profile = { ...this.profile, status: 'disconnected' }
       this.emitStatus()
       // 失败原因通过 MFA 回调如实暴露（phase 归 idle、hint 携带错误文案）
@@ -540,23 +577,29 @@ export class CduAuthManager {
    * 请求继续挂在服务器，手机确认事件可能投递给已被丢弃的旧 poll，新 poll 永远
    * 收不到 QRT（与「浏览器成功、客户端 500」的故障现象吻合）。
    */
-  private async pollMfaQr(ses: Electron.Session, loginId: string, apiHeaders: Record<string, string>): Promise<string | null> {
-    while (this.mfa && !this.mfa.cancelled) {
-      if (Date.now() - this.mfa.startedAt > MFA_SESSION_TIMEOUT_MS) {
-        this.mfa = null
+  private async pollMfaQr(
+    ses: Electron.Session,
+    loginId: string,
+    apiHeaders: Record<string, string>,
+    runtime: MfaRuntime,
+  ): Promise<string | null> {
+    while (this.mfa === runtime && !runtime.cancelled) {
+      if (Date.now() - runtime.startedAt > MFA_SESSION_TIMEOUT_MS) {
+        if (this.mfa === runtime) this.mfa = null
         this.profile = { ...this.profile, status: 'disconnected' }
         this.emitStatus()
         this.onMfaQrCallback?.({ phase: 'idle', hint: '二维码已超时，请重新登录获取新码' })
         return null
       }
       const controller = new AbortController()
+      runtime.pollController = controller
       const timer = setTimeout(() => controller.abort(), MFA_POLL_TIMEOUT_MS)
       try {
         const resp = await ses.fetch(`${CDU_CAS_BASE}/api/protected/qrlogin/scan/${encodeURIComponent(loginId)}?${Date.now()}`, {
           headers: apiHeaders,
           signal: controller.signal,
         })
-        if (!this.mfa || this.mfa.cancelled) return null
+        if (this.mfa !== runtime || runtime.cancelled) return null
         const json = (await resp.json()) as { code?: number; message?: string; data?: string }
         if (!json?.data?.startsWith('QRT-')) {
           // 非 QRT 响应（等待中/服务器异常）记入日志，便于诊断手机端 500 等问题
@@ -564,6 +607,7 @@ export class CduAuthManager {
         }
         // QRT-xxx-xxx#loginid = 手机已确认；其余（等待/超时）继续下一轮
         if (json?.data && json.data.startsWith('QRT-')) {
+          console.log('[cdu-mfa] 手机已确认，收到 QRT')
           return json.data
         }
       } catch {
@@ -571,6 +615,7 @@ export class CduAuthManager {
         await new Promise((resolve) => setTimeout(resolve, 1500))
       } finally {
         clearTimeout(timer)
+        if (runtime.pollController === controller) runtime.pollController = undefined
       }
     }
     return null
@@ -581,6 +626,7 @@ export class CduAuthManager {
     const ses = session.fromPartition(CDU_SESSION_PARTITION)
     const roleJson = await this.fetchCurrentRole(ses)
     const data = roleJson?.data
+    console.log(`[cdu-mfa] 教务会话校验 ret=${roleJson?.ret ?? 'null'} role=${data?.currentRoleId ?? 'none'}`)
     if (!data || data.currentRoleId !== 'xs') {
       throw new Error('教务会话建立失败：未取得学生角色，请确认使用学生账号')
     }
@@ -627,7 +673,7 @@ export class CduAuthManager {
     const response = await this.fetchWithTimeout(ses, `${CDU_JW_BASE}/admin/api/getCurrentRole`, {
       method: 'POST',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
-    })
+    }, '教务角色探针')
     const contentType = response.headers.get('content-type') ?? ''
     if (!contentType.includes('json')) {
       return null
@@ -638,7 +684,7 @@ export class CduAuthManager {
   /** 从教务主框架页抓取「姓名/学号」画像（登录落地页无姓名时的兜底） */
   private async fetchStudentName(ses: Electron.Session): Promise<string | null> {
     try {
-      const response = await this.fetchWithTimeout(ses, `${CDU_JW_BASE}/admin`, { redirect: 'follow' })
+      const response = await this.fetchWithTimeout(ses, `${CDU_JW_BASE}/admin`, { redirect: 'follow' }, '教务首页')
       const html = await response.text()
       return parseStudentNameFromAdminHtml(html)
     } catch {
@@ -652,6 +698,7 @@ export class CduAuthManager {
       ses,
       `${CDU_CAS_BASE}/api/protected/user/findCaptchaCount/${encodeURIComponent(username)}`,
       { headers: { referer: `${CDU_CAS_BASE}/login` } },
+      '验证码预检',
     )
     if (!response.ok) return
     const payload = (await response.json()) as { data?: { count?: number; captchaInvisible?: boolean; captchaUrl?: string | null } }
@@ -661,14 +708,26 @@ export class CduAuthManager {
     }
   }
 
-  /** 带超时的分区 Session fetch */
-  private async fetchWithTimeout(ses: Electron.Session, url: string, init?: RequestInit): Promise<GlobalResponse> {
-    return await Promise.race([
-      ses.fetch(url, init),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('网络请求超时，请检查校园网/VPN 连接')), REQUEST_TIMEOUT_MS)
-      }),
-    ])
+  /** 带超时的分区 Session fetch：超时必须真正 abort，否则旧请求会继续挂在同一会话上 */
+  private async fetchWithTimeout(
+    ses: Electron.Session,
+    url: string,
+    init?: RequestInit,
+    label = '请求',
+  ): Promise<GlobalResponse> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    try {
+      return await ses.fetch(url, { ...init, signal: controller.signal })
+    } catch (error) {
+      if (controller.signal.aborted) {
+        console.warn(`[cdu-auth] ${label}超时（${REQUEST_TIMEOUT_MS}ms）：${url.split('?')[0]}`)
+        throw new Error('网络请求超时，请检查校园网/VPN 连接')
+      }
+      throw error
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /** 密码按用户选择加密落盘（仅密码字段加密，绝不存明文） */
