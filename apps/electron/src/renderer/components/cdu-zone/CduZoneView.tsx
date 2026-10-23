@@ -17,26 +17,38 @@ import * as React from 'react'
 import { useAtom } from 'jotai'
 import {
   AlertCircle,
+  BadgeCheck,
   Bell,
+  BookOpen,
   CalendarDays,
+  Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   ClipboardList,
+  Copy,
   Eye,
   EyeOff,
   Loader2,
+  Lock,
   LogIn,
   LogOut,
   RefreshCw,
   School,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
+  User,
 } from 'lucide-react'
 import type { CduAccountProfile, CduIspData, CduMfaQrPayload, CduOverviewData } from '@profer/shared'
+import { detectIsWindows } from '@profer/ui'
 import { Button } from '@profer/ui/primitives/button'
 import { Input } from '@profer/ui/primitives/input'
 import { WindowControlsHost } from '@/components/WindowControlsTemplate'
+import { resolveWindowControlsRightInset } from '@/lib/window-controls-layout'
 import { CduDashboardSettings } from './CduDashboardSettings'
+import { CduVpnCard } from './CduVpnCard'
 import { CduDetailDialog, type CduDetailField } from './CduDetailDialog'
 import {
   CduIspStatus,
@@ -48,6 +60,7 @@ import {
 } from './CduIspSections'
 import {
   CDU_DEFAULT_PREFS,
+  CDU_DASHBOARD_COMPONENTS,
   CDU_DASHBOARD_SERVICES,
   normalizeCduDashboardPrefs,
   visibleCduDashboardComponents,
@@ -56,6 +69,7 @@ import {
 } from './cdu-dashboard'
 import {
   cduAccountAtom,
+  cduCachedTimetableCollapsedAtom,
   cduDashboardPrefsAtom,
   cduIspDataAtom,
   cduIspErrorAtom,
@@ -73,6 +87,25 @@ const WEEKDAY_LABELS = ['', '周一', '周二', '周三', '周四', '周五', '�
 const CDU_JW_HOME = 'https://szjw.cdu.edu.cn/admin/'
 const CDU_ISP_HOME = 'https://xsswzx.cdu.edu.cn/ispstu/com_user/main.asp'
 const CDU_ISP_BOOKS = 'https://xsswzx.cdu.edu.cn/ispstu/com_user/stu_tsjy.asp'
+
+/** 未登录态：专区三大能力矩阵 */
+const CDU_CAPABILITY_CARDS = [
+  {
+    icon: CalendarDays,
+    title: '课表与日程助理',
+    desc: '学期课表、节次时间与校历周次自动同步',
+  },
+  {
+    icon: ClipboardList,
+    title: '成绩与考试透视',
+    desc: '跨学期成绩、绩点与考试安排集中查看',
+  },
+  {
+    icon: BookOpen,
+    title: 'ISP 学生事务',
+    desc: '素质分、图书借阅、困难认定与通知聚合',
+  },
+] as const
 
 interface CduDetailState {
   title: string
@@ -109,6 +142,39 @@ function StatusBadge({ status }: { status: CduAccountProfile['status'] }): React
 
 function cnBadge(extra: string): string {
   return `inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${extra}`
+}
+
+/** CDU 统一身份认证通栏：对应 CDUT 专区的校庆横幅位置。 */
+function CduIdentityBanner(): React.ReactElement {
+  return (
+    <div className="relative z-10 flex shrink-0 items-center justify-between overflow-hidden border-b border-sky-500/25 bg-gradient-to-r from-sky-900/90 via-cyan-950/95 to-sky-900/90 px-6 py-2.5 text-xs text-sky-100 shadow-sm backdrop-blur-md">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="flex size-5 flex-shrink-0 items-center justify-center rounded-full bg-sky-300/20 text-sky-200">
+          <Sparkles size={12} className="animate-pulse" />
+        </span>
+        <span className="font-semibold tracking-wide">成都大学 · 统一身份认证</span>
+        <span className="truncate text-sky-200/80">数智教务 · ISP 学生综合服务平台</span>
+      </div>
+      <div className="hidden flex-shrink-0 items-center gap-1.5 rounded-full border border-sky-300/20 bg-sky-400/10 px-2.5 py-0.5 text-[11px] font-medium text-sky-100 sm:flex">
+        <ShieldCheck size={10} />
+        <span>自爱 自修 自尊 自强</span>
+      </div>
+    </div>
+  )
+}
+
+/** 左下角校园氛围水印：柔和光晕 + 低透明度校舍轮廓，不拦截交互。 */
+function CduWatermarkBackground(): React.ReactElement {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-0 select-none overflow-hidden" aria-hidden="true">
+      <div className="absolute -left-28 bottom-0 size-[420px] rounded-full bg-sky-500/5 blur-3xl dark:bg-sky-400/5" />
+      <div className="absolute -right-20 top-24 size-80 rounded-full bg-cyan-400/5 blur-3xl dark:bg-cyan-300/5" />
+      <School
+        className="absolute -bottom-20 -left-12 size-[360px] text-sky-900/[0.03] dark:text-sky-100/[0.02]"
+        strokeWidth={0.6}
+      />
+    </div>
+  )
 }
 
 /**
@@ -240,52 +306,66 @@ function LoginCard(): React.ReactElement {
 
   if (mfaActive) {
     return (
-      <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-lg shadow-black/[0.06]">
+      <div className="w-full max-w-sm rounded-2xl border border-border/80 bg-card p-7 shadow-xl shadow-sky-500/5">
         <MfaQrPanel onCancel={handleMfaCancel} />
       </div>
     )
   }
 
   return (
-    <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-lg shadow-black/[0.06]">
-      <div className="mb-5 flex items-center gap-2">
-        <span className="flex size-9 items-center justify-center rounded-xl bg-sky-600/10 text-sky-600 dark:text-sky-400">
-          <ShieldCheck className="size-4.5" />
-        </span>
-        <div>
-          <h3 className="text-sm font-semibold text-foreground">特区账户登录</h3>
-          <p className="text-[11px] text-muted-foreground">成都大学统一身份认证（CAS）</p>
+    <div className="w-full max-w-sm rounded-2xl border border-border/80 bg-card p-7 shadow-xl shadow-sky-500/5">
+      <div className="mb-6 space-y-1">
+        <div className="flex items-center gap-2">
+          <span className="flex size-8 items-center justify-center rounded-xl bg-sky-600/10 text-sky-600 dark:text-sky-400">
+            <ShieldCheck className="size-4" />
+          </span>
+          <h3 className="text-lg font-semibold text-foreground">连接成大统一身份认证</h3>
         </div>
+        <p className="text-xs text-muted-foreground">输入学号和密码，完成特区账户接入</p>
       </div>
 
-      <div className="space-y-3">
-        <Input
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          placeholder="学工号"
-          autoComplete="username"
-          disabled={submitting}
-        />
-        <div className="relative">
-          <Input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="密码"
-            type={showPassword ? 'text' : 'password'}
-            autoComplete="current-password"
-            disabled={submitting}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void handleLogin()
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword((v) => !v)}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/60 hover:text-muted-foreground"
-            aria-label={showPassword ? '隐藏密码' : '显示密码'}
-          >
-            {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-          </button>
+      <div className="space-y-4">
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-foreground">学号</label>
+          <div className="relative">
+            <User className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="请输入学号"
+              autoComplete="username"
+              disabled={submitting}
+              className="h-9 pl-9 text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-foreground">登录密码</label>
+          <div className="relative">
+            <Lock className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="请输入登录密码"
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="current-password"
+              disabled={submitting}
+              className="h-9 pl-9 pr-9 text-xs"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleLogin()
+              }}
+            />
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => setShowPassword((v) => !v)}
+              className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
+              aria-label={showPassword ? '隐藏密码' : '显示密码'}
+            >
+              {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            </button>
+          </div>
         </div>
 
         <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
@@ -293,14 +373,14 @@ function LoginCard(): React.ReactElement {
             type="checkbox"
             checked={remember}
             onChange={(e) => setRemember(e.target.checked)}
-            className="size-3.5 accent-sky-600"
+            className="size-3.5 rounded border-border accent-sky-600"
           />
-          记住密码（经系统级加密落盘，绝不经第三方服务器中转）
+          记住密码（OS 级安全加密）
         </label>
 
         {error && (
-          <div className="flex items-start gap-1.5 rounded-lg bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-600 dark:text-red-400">
-            <AlertCircle className="mt-0.5 size-3.5 flex-shrink-0" />
+          <div className="flex items-start gap-2 rounded-xl bg-red-500/10 p-3 text-xs leading-relaxed text-red-600 dark:text-red-400">
+            <AlertCircle className="mt-0.5 size-4 flex-shrink-0" />
             <span>{error}</span>
           </div>
         )}
@@ -308,21 +388,22 @@ function LoginCard(): React.ReactElement {
         <Button
           onClick={() => void handleLogin()}
           disabled={submitting || !username || !password}
-          className="w-full gap-2 bg-sky-600 hover:bg-sky-700"
+          className="mt-2 h-10 w-full gap-2 bg-sky-600 text-xs font-semibold shadow-md hover:bg-sky-700"
         >
           {submitting ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-          {submitting ? '正在静默认证…' : '登录教务系统'}
+          {submitting ? '正在静默认证…' : '一键连接特区账户'}
         </Button>
 
-        <p className="text-[11px] leading-relaxed text-muted-foreground/80">
-          登录凭据仅保存在本机沙盒，密码经加密后存储；会话 Cookie 运行于独立隔离分区，用完即弃。
-        </p>
+        <div className="flex items-start gap-2 rounded-xl bg-emerald-500/5 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground/80">
+          <ShieldCheck className="mt-0.5 size-3.5 flex-shrink-0 text-emerald-500" />
+          <span>凭据仅保存在本机沙盒，密码经系统级加密；会话 Cookie 运行于独立隔离分区。</span>
+        </div>
       </div>
     </div>
   )
 }
 
-/** 账户信息条（已登录态） */
+/** 账户信息卡（已登录态）：对齐 CDUT 专区的玻璃拟态实名卡。 */
 function ProfileBar({
   account,
   onRefresh,
@@ -336,38 +417,137 @@ function ProfileBar({
   onLogout: () => void
   onCustomize: () => void
 }): React.ReactElement {
+  const [copied, setCopied] = React.useState(false)
+  const active = account.status === 'active'
+
+  React.useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 1500)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+
+  const handleCopyStudentId = (): void => {
+    if (!account.studentId) return
+    void navigator.clipboard
+      .writeText(account.studentId)
+      .then(() => setCopied(true))
+      .catch(() => undefined)
+  }
+
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-2xl bg-card px-5 py-4 shadow-sm">
-      <span className="flex size-10 items-center justify-center rounded-full bg-sky-600/10 text-sm font-semibold text-sky-600 dark:text-sky-400">
-        {account.studentName.slice(0, 1) || <School className="size-4" />}
-      </span>
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-semibold text-foreground">{account.studentName || '未命名用户'}</span>
-          <StatusBadge status={account.status} />
-        </div>
-        <span className="text-xs text-muted-foreground">{account.studentId}</span>
-      </div>
-      {account.semester && (
-        <span className="rounded-full bg-sky-600/10 px-2.5 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400">
-          {account.semester} 学期
+    <section className="relative isolate overflow-hidden rounded-2xl border border-sky-500/20 bg-card/75 shadow-lg shadow-sky-500/5 backdrop-blur-md">
+      {/* 顶部青蓝渐变流光饰带 */}
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-sky-500/70 via-cyan-400/80 to-sky-500/70"
+        aria-hidden="true"
+      />
+      <div
+        className="pointer-events-none absolute -right-16 -top-16 size-48 rounded-full bg-sky-500/10 blur-3xl"
+        aria-hidden="true"
+      />
+
+      {/* 认证印章条 */}
+      <div className="flex items-center gap-1.5 border-b border-sky-500/10 bg-gradient-to-r from-sky-500/10 via-sky-500/5 to-transparent px-5 py-2">
+        <BadgeCheck size={14} className="shrink-0 text-sky-600 dark:text-sky-400" />
+        <span className="text-[11px] font-semibold tracking-wide text-sky-600 dark:text-sky-400">
+          成都大学统一身份认证 · 官方实名认证
         </span>
-      )}
-      <div className="ml-auto flex items-center gap-1.5">
-        <Button variant="ghost" size="sm" onClick={onCustomize} className="gap-1.5 text-muted-foreground">
-          <SlidersHorizontal className="size-3.5" />
-          自定义
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onRefresh} disabled={refreshing} className="gap-1.5 text-muted-foreground">
-          <RefreshCw className={refreshing ? 'size-3.5 animate-spin' : 'size-3.5'} />
-          刷新
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onLogout} className="gap-1.5 text-muted-foreground hover:text-red-500">
-          <LogOut className="size-3.5" />
-          退出登录
-        </Button>
+        <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+          <span
+            className={
+              'size-1.5 rounded-full ' +
+              (active ? 'animate-pulse bg-emerald-500' : 'bg-amber-500')
+            }
+            aria-hidden="true"
+          />
+          {active ? '保活心跳正常' : '会话待恢复'}
+        </span>
       </div>
-    </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+        <div className="flex min-w-0 flex-wrap items-center gap-4">
+          {/* 学号首字头像 + 在线信标 */}
+          <div className="relative flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-sky-500/25 bg-sky-500/10 text-xl font-semibold text-sky-600 shadow-inner ring-2 ring-background dark:text-sky-400">
+            {account.studentName.slice(0, 1) || <School className="size-7" />}
+            <span className="absolute bottom-0.5 right-0.5 flex size-4 items-center justify-center">
+              <span
+                className={
+                  'absolute inline-flex size-full rounded-full opacity-60 ' +
+                  (active ? 'animate-ping bg-emerald-400' : 'bg-amber-400')
+                }
+                aria-hidden="true"
+              />
+              <span
+                className={
+                  'relative inline-flex size-3.5 rounded-full border-2 border-card ' +
+                  (active ? 'bg-emerald-500' : 'bg-amber-500')
+                }
+                aria-hidden="true"
+              />
+            </span>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="truncate text-lg font-bold tracking-tight text-foreground">
+                {account.studentName || '未命名用户'}
+              </span>
+              <StatusBadge status={account.status} />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-500/25 bg-sky-500/5 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-sky-600 dark:text-sky-400">
+                {account.studentId || '—'}
+                <button
+                  type="button"
+                  onClick={handleCopyStudentId}
+                  disabled={!account.studentId}
+                  aria-label="复制学号"
+                  className="text-sky-600/70 transition-colors hover:text-sky-600 disabled:opacity-40 dark:text-sky-400/70 dark:hover:text-sky-400"
+                >
+                  {copied ? <Check size={11} /> : <Copy size={11} />}
+                </button>
+              </span>
+              {account.semester && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[11px] text-muted-foreground backdrop-blur-sm">
+                  {account.semester} 学期
+                </span>
+              )}
+              {account.role && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-[11px] text-muted-foreground backdrop-blur-sm">
+                  {account.role}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button variant="ghost" size="sm" onClick={onCustomize} className="gap-1.5 text-muted-foreground hover:text-sky-600">
+            <SlidersHorizontal className="size-3.5" />
+            自定义
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="gap-1.5 text-muted-foreground hover:text-sky-600"
+          >
+            <RefreshCw className={refreshing ? 'size-3.5 animate-spin' : 'size-3.5'} />
+            刷新
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onLogout}
+            className="gap-1.5 text-muted-foreground hover:text-red-500"
+          >
+            <LogOut className="size-3.5" />
+            退出登录
+          </Button>
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -384,7 +564,7 @@ export function SectionCard({
   children: React.ReactNode
 }): React.ReactElement {
   return (
-    <section className="rounded-2xl bg-card p-5 shadow-sm">
+    <section className="relative overflow-hidden rounded-2xl border border-border/60 bg-card/80 p-5 shadow-sm shadow-sky-500/5 backdrop-blur-sm">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="flex size-7 items-center justify-center rounded-lg bg-sky-600/10 text-sky-600 dark:text-sky-400">
           {icon}
@@ -852,8 +1032,13 @@ function CduServiceSection({
   const meta = CDU_DASHBOARD_SERVICES.find((item) => item.id === serviceId)!
   const Icon = meta.icon
   return (
-    <section className="overflow-hidden rounded-2xl border border-border/60 bg-card/70 shadow-sm">
-      <header className="flex flex-wrap items-center gap-2.5 border-b border-border/60 bg-muted/20 px-5 py-3">
+    <section className="relative overflow-hidden rounded-2xl border border-sky-500/20 bg-card/75 shadow-lg shadow-sky-500/5 backdrop-blur-md">
+      {/* 顶部青蓝流光饰带，对齐 CDUT 专区的 Bento 卡片质感 */}
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-sky-500/70 via-cyan-400/80 to-sky-500/70"
+        aria-hidden="true"
+      />
+      <header className="flex flex-wrap items-center gap-2.5 border-b border-sky-500/10 bg-gradient-to-r from-sky-500/10 via-sky-500/5 to-transparent px-5 py-3">
         <span className="flex size-8 items-center justify-center rounded-xl bg-sky-600/10 text-sky-600 dark:text-sky-400">
           <Icon className="size-4" />
         </span>
@@ -868,14 +1053,14 @@ function CduServiceSection({
             {meta.subtitle} · {meta.hint}
           </p>
         </div>
-        <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+        <span className="ml-auto rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium tabular-nums text-sky-600 dark:text-sky-400">
           {visibleCount}/{totalCount} 个组件
         </span>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 gap-1 px-2 text-[11px] text-muted-foreground"
+          className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-sky-600"
           onClick={onCustomize}
         >
           <SlidersHorizontal className="size-3" />
@@ -905,6 +1090,8 @@ export function CduZoneView(): React.ReactElement {
   const [prefsMap, setPrefsMap] = useAtom(cduDashboardPrefsAtom)
   const [settingsOpen, setSettingsOpen] = React.useState(false)
   const [detail, setDetail] = React.useState<CduDetailState | null>(null)
+  const [cachedTimetableCollapsed, setCachedTimetableCollapsed] = useAtom(cduCachedTimetableCollapsedAtom)
+  const isWindows = React.useMemo(() => detectIsWindows(), [])
 
   const prefsKey = account.studentId || '__default__'
   const prefs = React.useMemo(
@@ -921,6 +1108,7 @@ export function CduZoneView(): React.ReactElement {
   const isLoggedIn = account.status === 'active' || account.status === 'expired'
   const jwComponents = visibleCduDashboardComponents(prefs, 'jw')
   const ispComponents = visibleCduDashboardComponents(prefs, 'isp')
+  const quickComponents = [...jwComponents, ...ispComponents]
   // 全部 ISP 组件被隐藏时不访问 ISP 站点；重新启用后由 enabled 变化触发拉取。
   const isp = useCduIspData(account.status === 'active' && ispComponents.length > 0)
 
@@ -1141,181 +1329,257 @@ export function CduZoneView(): React.ReactElement {
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-content-area">
       {/* 顶栏拖拽区 + 窗口控制按钮宿主（与 CDUT 专区同构） */}
-      <div className="absolute inset-x-0 top-0 z-0 h-14 titlebar-drag-region" />
+      <div
+        className="absolute inset-x-0 top-0 z-0 h-14 titlebar-drag-region"
+        style={{ right: resolveWindowControlsRightInset(isWindows) }}
+        aria-hidden="true"
+      />
       <WindowControlsHost id="cdu-zone" priority={20} className="absolute right-2 top-[3px] z-20" />
 
-      <div className="relative z-10 min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-7xl space-y-4 p-6 pt-16">
-          {/* 顶部品牌横幅：青蓝渐变（区分 CDUT 专区红金配色） */}
-          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-sky-700 to-cyan-600 px-6 py-5 text-white shadow-md">
-            <div className="flex items-center gap-3">
-              <span className="flex size-11 items-center justify-center rounded-2xl bg-white/15">
-                <School className="size-5.5" />
-              </span>
-              <div>
-                <h1 className="text-lg font-bold tracking-tight">CDU 专区</h1>
-                <p className="text-xs text-white/80">
-                  统一身份认证 · 数智教务 / ISP 学生综合服务平台 · 自爱 自修 自尊 自强
-                </p>
-              </div>
-            </div>
-          </div>
+      <CduWatermarkBackground />
 
-          {!isLoggedIn ? (
-            /* 未登录态：有离线快照时 = 登录卡 + 只读课表镜像；无快照 = 品牌区 + 登录卡 */
-            overview ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 rounded-xl bg-sky-500/10 px-4 py-3 text-xs text-sky-700 dark:text-sky-300">
+      {/* 固定顶栏：校徽图标 + 专区名 + 统一身份认证徽章 */}
+      <header
+        className="relative z-10 flex shrink-0 items-center justify-between border-b border-border/60 bg-card/80 px-5 py-3 titlebar-no-drag backdrop-blur-sm"
+        style={{ paddingRight: resolveWindowControlsRightInset(isWindows) + 20 }}
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex size-7 items-center justify-center rounded-lg bg-sky-600/10 text-sky-600 shadow-sm dark:text-sky-400">
+            <School size={18} />
+          </div>
+          <span className="text-sm font-semibold tracking-tight">CDU 专区</span>
+          <span className="rounded-lg bg-sky-600/10 px-2.5 py-1 text-sm font-semibold text-sky-600 dark:text-sky-400">
+            统一身份认证
+          </span>
+        </div>
+      </header>
+
+      <CduIdentityBanner />
+
+      <div className="relative z-10 min-h-0 flex-1 overflow-y-auto">
+        {!isLoggedIn ? (
+          <div className="mx-auto flex min-h-full w-full max-w-6xl items-center justify-center p-8">
+            {overview ? (
+              <div className="w-full space-y-5">
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-xs text-sky-700 dark:text-sky-300">
                   <ShieldCheck className="size-4 flex-shrink-0" />
-                  <span>
+                  <span className="min-w-0 flex-1">
                     以下课表为上次登录时的本地缓存（{new Date(overview.fetchedAt).toLocaleString('zh-CN')} 快照），
                     登录后自动更新最新数据
                   </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setCachedTimetableCollapsed((value) => !value)}
+                    aria-expanded={!cachedTimetableCollapsed}
+                    className="h-7 flex-shrink-0 gap-1 px-2 text-[11px] text-sky-700 hover:bg-sky-500/10 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
+                  >
+                    {cachedTimetableCollapsed ? (
+                      <ChevronDown className="size-3.5" />
+                    ) : (
+                      <ChevronUp className="size-3.5" />
+                    )}
+                    {cachedTimetableCollapsed ? '展开课表' : '折叠课表'}
+                  </Button>
                 </div>
-                <CduTimetableOnly />
-                <div className="flex justify-center py-2">
+                {!cachedTimetableCollapsed && <CduTimetableOnly />}
+                <div className="mx-auto w-full max-w-sm space-y-3 py-2">
                   <LoginCard />
+                  <CduVpnCard isLoggedIn={false} />
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col items-stretch gap-6 py-6 lg:flex-row lg:items-center lg:justify-center">
-                <div className="max-w-md space-y-4">
-                  <h2 className="text-xl font-bold text-foreground">你的成大“赛博教务助手”</h2>
-                  <p className="text-sm leading-relaxed text-muted-foreground">
-                    静默接入成都大学统一身份认证、数智教务与 ISP 学生综合服务平台，课表、成绩、考试、通知、
-                    素质分、图书借阅一站直达。数据全部只读查询，凭据仅保存在本机沙盒。
-                  </p>
-                  <ul className="space-y-2 text-xs text-muted-foreground">
-                    <li className="flex items-center gap-2">
-                      <span className="size-1.5 rounded-full bg-sky-500" />
-                      学号密码一键登录，后台静默完成 CAS 认证，界面零跳转
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="size-1.5 rounded-full bg-sky-500" />
-                      按统一身份认证的子服务组织数据，可自定义显示哪些组件
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="size-1.5 rounded-full bg-sky-500" />
-                      严格学生端只读：会话失效如实提示，绝不假装在线
-                    </li>
-                  </ul>
+              <div className="grid w-full grid-cols-1 items-center gap-12 lg:grid-cols-12">
+                <div className="space-y-8 lg:col-span-7">
+                  <div className="space-y-4">
+                    <div className="inline-flex items-center gap-2 rounded-full border border-sky-500/20 bg-sky-500/5 px-3 py-1 text-xs font-medium text-sky-600 dark:text-sky-400">
+                      <Sparkles size={13} />
+                      <span>成都大学 · 智慧校园专区</span>
+                    </div>
+                    <h1 className="text-3xl font-extrabold tracking-tight text-foreground sm:text-4xl">
+                      开启你的成大智能校园工作台
+                    </h1>
+                    <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
+                      静默接入成都大学统一身份认证、数智教务与 ISP 学生综合服务平台 ——
+                      课表、成绩、考试、通知、素质分与图书借阅一站直达。数据全部只读查询，凭据仅保存在本机沙盒。
+                    </p>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {CDU_CAPABILITY_CARDS.map((item) => (
+                      <div
+                        key={item.title}
+                        className="rounded-xl border border-border/60 bg-card/60 p-4 shadow-sm backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+                      >
+                        <div className="flex size-8 items-center justify-center rounded-lg bg-sky-600/10 text-sky-600 dark:text-sky-400">
+                          <item.icon size={16} />
+                        </div>
+                        <h4 className="mt-3 text-xs font-semibold text-foreground">{item.title}</h4>
+                        <p className="mt-1 text-[11px] leading-normal text-muted-foreground">{item.desc}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground/80">
+                    <ShieldCheck className="size-4 text-emerald-500" />
+                    <span>凭据经系统级加密落盘，绝不上云；会话 Cookie 运行于独立隔离分区。</span>
+                  </div>
                 </div>
-                <LoginCard />
+
+                <div className="mx-auto w-full max-w-sm space-y-3 lg:col-span-5 lg:mx-0 lg:ml-auto">
+                  <LoginCard />
+                  <CduVpnCard isLoggedIn={false} />
+                </div>
               </div>
-            )
-          ) : (
-            /* 已登录态：账户条 + 统一身份认证子服务 + 可自定义组件 */
-            <>
-              <ProfileBar
-                account={account}
-                refreshing={loading || isp.loading}
-                onRefresh={refreshAll}
-                onLogout={() => void handleLogout()}
-                onCustomize={() => setSettingsOpen(true)}
-              />
+            )}
+          </div>
+        ) : (
+          <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 p-8">
+            <ProfileBar
+              account={account}
+              refreshing={loading || isp.loading}
+              onRefresh={refreshAll}
+              onLogout={() => void handleLogout()}
+              onCustomize={() => setSettingsOpen(true)}
+            />
 
-              <CduDashboardSettings
-                open={settingsOpen}
-                onOpenChange={setSettingsOpen}
-                prefs={prefs}
-                onChange={updatePrefs}
-              />
+            <CduVpnCard isLoggedIn />
 
-              {account.status === 'expired' && (
-                <div className="flex items-center gap-2 rounded-xl bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
-                  <AlertCircle className="size-4 flex-shrink-0" />
-                  教务会话已过期，请退出后重新登录（不会静默伪装在线）
-                </div>
-              )}
+            <CduDashboardSettings
+              open={settingsOpen}
+              onOpenChange={setSettingsOpen}
+              prefs={prefs}
+              onChange={updatePrefs}
+            />
 
-              {jwComponents.length === 0 && ispComponents.length === 0 ? (
-                <div className="rounded-2xl bg-card px-6 py-10 text-center shadow-sm">
-                  <p className="text-sm font-medium text-foreground">当前隐藏了所有组件</p>
-                  <p className="mt-1 text-xs text-muted-foreground">打开“自定义”选择要展示的教务或 ISP 组件。</p>
-                  <Button className="mt-4 gap-1.5" onClick={() => setSettingsOpen(true)}>
-                    <SlidersHorizontal className="size-4" />
-                    自定义展示
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  {jwComponents.length > 0 && (
-                    <CduServiceSection
-                      serviceId="jw"
-                      visibleCount={jwComponents.length}
-                      totalCount={prefs.order.jw.length}
-                      onCustomize={() => setSettingsOpen(true)}
+            {account.status === 'expired' && (
+              <div className="flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
+                <AlertCircle className="size-4 flex-shrink-0" />
+                教务会话已过期，请退出后重新登录（不会静默伪装在线）
+              </div>
+            )}
+
+            {/* 对齐 CDUT 专区的高频场景胶囊条：点击平滑定位到对应组件 */}
+            {quickComponents.length > 0 && (
+              <div className="flex flex-wrap items-center justify-center gap-2.5">
+                {quickComponents.map((id) => {
+                  const meta = CDU_DASHBOARD_COMPONENTS[id]
+                  const Icon = meta.icon
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => {
+                        document
+                          .getElementById(`cdu-component-${id}`)
+                          ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                      }}
+                      className="flex items-center gap-2 rounded-full border border-border/80 bg-card/80 px-4 py-2 text-xs font-medium shadow-sm transition-all hover:bg-sky-500/10 hover:text-sky-600 dark:hover:text-sky-400"
                     >
-                      {error && (
-                        <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-400">
-                          <AlertCircle className="size-4 flex-shrink-0" />
-                          {error}
-                        </div>
-                      )}
-                      {loading && !overview && (
-                        <div className="flex items-center justify-center gap-2 rounded-2xl bg-card py-10 text-sm text-muted-foreground shadow-sm">
-                          <Loader2 className="size-4 animate-spin" />
-                          正在拉取教务数据…
-                        </div>
-                      )}
-                      {!loading && !error && !overview && <EmptyHint text="暂无教务数据" />}
-                      {overview && (
-                        <>
-                          {overview.partialErrors.length > 0 && (
-                            <div className="rounded-xl bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-700 dark:text-amber-400">
-                              部分数据加载失败：{overview.partialErrors.join('；')}
+                      <Icon size={15} />
+                      <span>{meta.title}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {jwComponents.length === 0 && ispComponents.length === 0 ? (
+              <div className="rounded-2xl border border-sky-500/20 bg-card/75 px-6 py-10 text-center shadow-lg shadow-sky-500/5 backdrop-blur-md">
+                <p className="text-sm font-medium text-foreground">当前隐藏了所有组件</p>
+                <p className="mt-1 text-xs text-muted-foreground">打开“自定义”选择要展示的教务或 ISP 组件。</p>
+                <Button className="mt-4 gap-1.5 bg-sky-600 hover:bg-sky-700" onClick={() => setSettingsOpen(true)}>
+                  <SlidersHorizontal className="size-4" />
+                  自定义展示
+                </Button>
+              </div>
+            ) : (
+              <>
+                {jwComponents.length > 0 && (
+                  <CduServiceSection
+                    serviceId="jw"
+                    visibleCount={jwComponents.length}
+                    totalCount={prefs.order.jw.length}
+                    onCustomize={() => setSettingsOpen(true)}
+                  >
+                    {error && (
+                      <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-400">
+                        <AlertCircle className="size-4 flex-shrink-0" />
+                        {error}
+                      </div>
+                    )}
+                    {loading && !overview && (
+                      <div className="flex items-center justify-center gap-2 rounded-2xl bg-card py-10 text-sm text-muted-foreground shadow-sm">
+                        <Loader2 className="size-4 animate-spin" />
+                        正在拉取教务数据…
+                      </div>
+                    )}
+                    {!loading && !error && !overview && <EmptyHint text="暂无教务数据" />}
+                    {overview && (
+                      <>
+                        {overview.partialErrors.length > 0 && (
+                          <div className="rounded-xl bg-amber-500/10 px-4 py-2.5 text-[11px] text-amber-700 dark:text-amber-400">
+                            部分数据加载失败：{overview.partialErrors.join('；')}
+                          </div>
+                        )}
+                        <div className="grid gap-4 lg:grid-cols-2">
+                          {jwComponents.map((id) => (
+                            <div
+                              key={id}
+                              id={`cdu-component-${id}`}
+                              className={`scroll-mt-24 ${componentGridClass(id)}`}
+                            >
+                              {renderJwComponent(id)}
                             </div>
-                          )}
-                          <div className="grid gap-4 lg:grid-cols-2">
-                            {jwComponents.map((id) => (
-                              <div key={id} className={componentGridClass(id)}>
-                                {renderJwComponent(id)}
-                              </div>
-                            ))}
-                          </div>
-                          <p className="pb-2 text-center text-[11px] text-muted-foreground/60">
-                            数据更新于 {new Date(overview.fetchedAt).toLocaleTimeString('zh-CN')} · 仅本机只读查询，不向任何第三方服务器中转
-                          </p>
-                        </>
-                      )}
-                    </CduServiceSection>
-                  )}
+                          ))}
+                        </div>
+                        <p className="pb-2 text-center text-[11px] text-muted-foreground/60">
+                          数据更新于 {new Date(overview.fetchedAt).toLocaleTimeString('zh-CN')} · 仅本机只读查询，不向任何第三方服务器中转
+                        </p>
+                      </>
+                    )}
+                  </CduServiceSection>
+                )}
 
-                  {ispComponents.length > 0 && (
-                    <CduServiceSection
-                      serviceId="isp"
-                      visibleCount={ispComponents.length}
-                      totalCount={prefs.order.isp.length}
-                      onCustomize={() => setSettingsOpen(true)}
-                    >
-                      <CduIspStatus
-                        loading={isp.loading}
-                        error={isp.error}
-                        data={isp.data}
-                        onRetry={() => void isp.refresh(true)}
-                      />
-                      {!isp.loading && !isp.error && !isp.data && <EmptyHint text="暂无 ISP 数据" />}
-                      {isp.data && (
-                        <>
-                          <div className="grid gap-4 lg:grid-cols-2">
-                            {ispComponents.map((id) => (
-                              <div key={id} className={componentGridClass(id)}>
-                                {renderIspComponent(id)}
-                              </div>
-                            ))}
-                          </div>
-                          <p className="pb-2 text-center text-[11px] text-muted-foreground/60">
-                            数据更新于 {new Date(isp.data.fetchedAt).toLocaleTimeString('zh-CN')} · 服务端渲染页面只读解析
-                          </p>
-                        </>
-                      )}
-                    </CduServiceSection>
-                  )}
-                </>
-              )}
-            </>
-          )}
-        </div>
+                {ispComponents.length > 0 && (
+                  <CduServiceSection
+                    serviceId="isp"
+                    visibleCount={ispComponents.length}
+                    totalCount={prefs.order.isp.length}
+                    onCustomize={() => setSettingsOpen(true)}
+                  >
+                    <CduIspStatus
+                      loading={isp.loading}
+                      error={isp.error}
+                      data={isp.data}
+                      onRetry={() => void isp.refresh(true)}
+                    />
+                    {!isp.loading && !isp.error && !isp.data && <EmptyHint text="暂无 ISP 数据" />}
+                    {isp.data && (
+                      <>
+                        <div className="grid gap-4 lg:grid-cols-2">
+                          {ispComponents.map((id) => (
+                            <div
+                              key={id}
+                              id={`cdu-component-${id}`}
+                              className={`scroll-mt-24 ${componentGridClass(id)}`}
+                            >
+                              {renderIspComponent(id)}
+                            </div>
+                          ))}
+                        </div>
+                        <p className="pb-2 text-center text-[11px] text-muted-foreground/60">
+                          数据更新于 {new Date(isp.data.fetchedAt).toLocaleTimeString('zh-CN')} · 服务端渲染页面只读解析
+                        </p>
+                      </>
+                    )}
+                  </CduServiceSection>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <CduDetailDialog

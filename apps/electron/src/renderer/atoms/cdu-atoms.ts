@@ -47,3 +47,9 @@ export const cduDashboardPrefsAtom = atomWithStorage<Record<string, CduDashboard
   'cdu-dashboard-prefs',
   {},
 )
+
+/** 未登录态：上次登录的离线课表是否折叠（纯展示偏好，跨重启保留） */
+export const cduCachedTimetableCollapsedAtom = atomWithStorage<boolean>(
+  'cdu-cached-timetable-collapsed',
+  false,
+)
