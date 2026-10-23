@@ -140,6 +140,7 @@ function registerProtocolsAndHandlers(): void {
 
 
 import { getSettings, updateSettings } from './lib/settings-service'
+import type { MainWindowState } from '../types/settings'
 import { resolveAppThemeIsDark } from './lib/app-theme-service'
 import { createCenteredStartupSplashBounds, createStartupSplashHtml } from './lib/startup-splash'
 import { handleProferFileRequest } from './lib/local-file-protocol'
@@ -444,6 +445,36 @@ function saveMainWindowState(): void {
   })
 }
 
+/**
+ * 恢复上次窗口几何；显示器拔插/分辨率变化时把窗口夹回最近显示器的工作区，
+ * 避免恢复成屏幕外不可见窗口。
+ */
+function resolveInitialWindowBounds(state?: MainWindowState): {
+  width: number
+  height: number
+  x?: number
+  y?: number
+} {
+  if (!state) return { width: 1400, height: 900 }
+
+  const savedWidth = Number.isFinite(state.width) ? state.width : 1400
+  const savedHeight = Number.isFinite(state.height) ? state.height : 900
+  const savedX = Number.isFinite(state.x) ? state.x : undefined
+  const savedY = Number.isFinite(state.y) ? state.y : undefined
+  const display = screen.getDisplayMatching({
+    x: savedX ?? 0,
+    y: savedY ?? 0,
+    width: Math.max(1, savedWidth),
+    height: Math.max(1, savedHeight),
+  })
+  const area = display.workArea
+  const width = Math.min(Math.max(800, savedWidth), area.width)
+  const height = Math.min(Math.max(600, savedHeight), area.height)
+  const x = Math.min(Math.max(savedX ?? area.x, area.x), area.x + area.width - width)
+  const y = Math.min(Math.max(savedY ?? area.y, area.y), area.y + area.height - height)
+  return { width, height, x, y }
+}
+
 function createWindow(): void {
   const iconPath = getIconPath()
   const iconExists = existsSync(iconPath)
@@ -469,9 +500,9 @@ function createWindow(): void {
       : {}
 
   const savedState = getSettings().mainWindowState
-  const initialBounds = savedState
-    ? { width: savedState.width, height: savedState.height, x: savedState.x, y: savedState.y }
-    : { width: 1400, height: 900 }
+  // 上次是普通窗口就恢复原尺寸；只有上次最大化（或首次启动）才铺满并最大化。
+  const shouldStartMaximized = savedState ? savedState.isMaximized !== false : true
+  const initialBounds = resolveInitialWindowBounds(savedState)
 
   mainWindow = new BrowserWindow({
     ...initialBounds,
@@ -595,7 +626,8 @@ function createWindow(): void {
     showTimer = setTimeout(() => {
       // 冷启动先把隐藏主窗口同步到完整工作区，再显示并恢复原生最大化状态。
       // 主窗口首次可见时已经是目标尺寸，不会先露出保存的普通 bounds。
-      if (!isRefreshReload && mainWindow && startupDisplayWorkArea) {
+      // 上次是普通窗口时保持保存尺寸，不再强制铺满。
+      if (!isRefreshReload && shouldStartMaximized && mainWindow && startupDisplayWorkArea) {
         mainWindow.setBounds(startupDisplayWorkArea)
       }
       if (process.platform === 'darwin' && app.dock) app.dock.show()
@@ -605,7 +637,7 @@ function createWindow(): void {
       if (isRefreshReload && refreshWasFullScreen) mainWindow?.setFullScreen(true)
       // renderer 已经 ready，先显示完整尺寸的主窗口，再同步原生最大化状态，最后关闭 Splash。
       mainWindow?.showInactive()
-      if (!isRefreshReload && mainWindow && !mainWindow.isMaximized()) mainWindow.maximize()
+      if (!isRefreshReload && shouldStartMaximized && mainWindow && !mainWindow.isMaximized()) mainWindow.maximize()
       if (!startupSplashWindow?.isDestroyed()) startupSplashWindow?.close()
       startupSplashWindow = null
       // 兜底：隐藏窗口阶段 setFullScreen 未生效时（个别平台），show 后立即再恢复一次全屏
@@ -1171,6 +1203,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  // 退出前落盘最后一次窗口几何，避免刚调整大小后立即退出丢失
+  saveMainWindowState()
   // 标记正在退出，让 close 事件不再阻止关闭
   setQuitting()
 
